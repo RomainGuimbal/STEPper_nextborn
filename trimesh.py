@@ -375,20 +375,3 @@ class TriMesh:
             for i in range(3):
                 uvs.append(t.uvs[i])
         return uvs
-
-    def get_all_loop_data(self):
-        """Return colors, material_names, normals, uvs in a single pass.
-
-        More efficient than calling get_loop_colors/normals/uvs/material_names separately.
-        """
-        cols = []
-        mat_names = []
-        norms = []
-        uvs = []
-        for t in self.tris:
-            for i in range(3):
-                cols.append(t.color)
-                mat_names.append(t.material_name)
-                norms.append(t.norms[i])
-                uvs.append(t.uvs[i])
-        return cols, mat_names, norms, uvs

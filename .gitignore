@@ -1,6 +1,6 @@
-/__pycache__
-/OCC/Core/__pycache__
-/OCC/__pycache__
-/OCC/Wrapper/__pycache__
-/OCC/Wrapper/__pycache__
-/MaterialDB
+*.blend1
+*.pyc
+*.pdf
+/OCC/
+
+__pycache__/

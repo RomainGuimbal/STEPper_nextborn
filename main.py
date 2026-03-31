@@ -13,60 +13,32 @@
 #
 # Created Date: Thursday, April 15th 2021, 4:38:48 pm
 # Copyright: Tommi Hyppänen
-#
-# Modified 2026 by Peak-Design:
-#   - Ported to Blender 5.0 API
-#   - Added failed parts tracking and popup warnings
-#   - Import summary improvements
 
 import dataclasses
-import json
 import ntpath
 import os
 import time
 import sys
-from collections import Counter, OrderedDict
 
 import numpy as np
 import bmesh  # type: ignore
 import bpy  # type: ignore
 from bpy.props import StringProperty  # type: ignore
 from bpy_extras.io_utils import ImportHelper  # type: ignore
-from mathutils import Matrix, Vector  # type: ignore
+from mathutils import Vector  # type: ignore
 
 from .trimesh import TriMesh
-from .importer import NativeMeshData
 
-# LRU file cache with max entry limit
-MAX_FILE_CACHE = 10
-global_file_cache = OrderedDict()
-must_have_python = (3, 13)
+# import sys
+# import math
 
-# Color quantization precision for material merging (~1.5% tolerance)
-_COLOR_MERGE_PRECISION = 64
+# from collections import defaultdict
 
+# from .sizeof import total_size
+# utils.memorytrace_start()
 
-def _quantize_color(col):
-    """Round color components to merge near-identical materials."""
-    return tuple(round(c * _COLOR_MERGE_PRECISION) / _COLOR_MERGE_PRECISION for c in col)
-
-
-def _cache_put(filepath, step_reader):
-    """Add to file cache with LRU eviction."""
-    if filepath in global_file_cache:
-        global_file_cache.move_to_end(filepath)
-    global_file_cache[filepath] = step_reader
-    while len(global_file_cache) > MAX_FILE_CACHE:
-        evicted_path, _ = global_file_cache.popitem(last=False)
-        print(f"Cache evicted: {os.path.basename(evicted_path)}")
-
-
-def _cache_get(filepath):
-    """Get from file cache, updating LRU order. Returns None if not found."""
-    if filepath in global_file_cache:
-        global_file_cache.move_to_end(filepath)
-        return global_file_cache[filepath]
-    return None
+global_file_cache = {}
+must_have_python = (3, 11)
 
 
 def scalemat(mat, sl):
@@ -158,8 +130,6 @@ def bpy_update_object_data(objdata, bm, vcol_name, colors, uvs, norms, mat_names
             if build_materials:
                 # Translate color into name, if not defined
                 if mat_col_name is None:
-                    # Quantize color to merge near-identical materials
-                    mat_col = _quantize_color(mat_col)
                     mat_col_name = "STEP_" + "".join("{0:0{1}x}".format(int(mat_col[i] * 255), 2) for i in range(3))
 
                 # If material doesn't exist, create it
@@ -195,19 +165,23 @@ def bpy_update_object_data(objdata, bm, vcol_name, colors, uvs, norms, mat_names
     #             removed.add(i)
 
     # Update mesh from Bmesh
-    # Only switch mode if not already in OBJECT mode (e.g. during rebuild)
-    active = bpy.context.object
-    prev_mode = active.mode if active else "OBJECT"
-    if prev_mode != "OBJECT":
-        bpy.ops.object.mode_set(mode="OBJECT")
+    # Apply also in edit mode, not just object mode
+    prev_mode = bpy.context.object.mode
+    bpy.ops.object.mode_set(mode="OBJECT")
 
     bm.to_mesh(objdata)
 
     if len(norms) > 0:
+        # Apply normals to mesh if they exist
+        # objdata.use_auto_smooth = True
+        # objdata.auto_smooth_angle = 3.14159
+
+        # Filter removed items from norms
+        # norms = [n for ni, n in enumerate(norms) if ni not in removed]
         objdata.normals_split_custom_set(np.array(norms))
 
-    if prev_mode != "OBJECT":
-        bpy.ops.object.mode_set(mode=prev_mode)
+    # Return to previous object/edit mode
+    bpy.ops.object.mode_set(mode=prev_mode)
 
 
 def calculate_detail_level(dlev):
@@ -263,7 +237,7 @@ def choose_hierarchy_types(htypes):
     return hierarchy_flat, hierarchy_tree, hierarchy_empties
 
 
-def transform_to_up(up, chosen_objects, scale, to_cursor=True, apply_scale=True):
+def transform_to_up(up, chosen_objects, scale, to_cursor=True):
     """
     Set all chosen_objects transforms <up>["X", "Y", "Z"] as up
     Optionally move to cursor <to_cursor>
@@ -309,381 +283,44 @@ def transform_to_up(up, chosen_objects, scale, to_cursor=True, apply_scale=True)
         # apply
         set_obj_matrix_world(obj, mat)
 
-    # Apply scale — bake scale into mesh vertices so obj.scale = (1,1,1)
-    # Uses direct vertex scaling instead of bpy.ops.object.transform_apply
-    # to avoid "Cannot apply to a multi user" errors on instanced meshes.
-    if apply_scale and scale != 1.0:
-        processed_meshes = set()
-        for obj in chosen_objects:
-            if obj.data is None:
-                continue
-            mesh = obj.data
-            if mesh not in processed_meshes:
-                vert_count = len(mesh.vertices)
-                if vert_count > 0:
-                    verts = np.empty(vert_count * 3, dtype=np.float32)
-                    mesh.vertices.foreach_get('co', verts)
-                    verts *= scale
-                    mesh.vertices.foreach_set('co', verts)
-                    mesh.update()
-                processed_meshes.add(mesh)
+    # Apply scale
+    # for obj in created_objs:
+    #     # Apply object scale
+    #     obj.select_set(True)
+    #     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    #     obj.select_set(False)
 
-        for obj in chosen_objects:
-            if obj.data is None:
-                continue
-            loc, rot, _ = obj.matrix_world.decompose()
-            obj.matrix_world = Matrix.LocRotScale(loc, rot, Vector((1.0, 1.0, 1.0)))
-
-
-# Debug timing flag — set from addon settings at import start
-_debug_timing = False
-
-# Cumulative timing accumulators for profiling Phase 2
-_phase2_times = {
-    "build_trimesh": 0.0,
-    "fuse_verts": 0.0,
-    "filter_zero_area": 0.0,
-    "filter_same_face": 0.0,
-    "fill_empty_color": 0.0,
-    "get_all_loop_data": 0.0,
-    "add_to_bm": 0.0,
-    "bpy_update": 0.0,
-}
-
-
-def _reset_phase2_times():
-    for k in _phase2_times:
-        _phase2_times[k] = 0.0
-
-
-def _print_phase2_times():
-    print("\n--- Phase 2 timing breakdown ---")
-    total = sum(_phase2_times.values())
-    for k, v in sorted(_phase2_times.items(), key=lambda x: -x[1]):
-        pct = (v / total * 100) if total > 0 else 0
-        print(f"  {k:20s}: {v:7.2f}s  ({pct:4.1f}%)")
-    print(f"  {'TOTAL':20s}: {total:7.2f}s")
-
-
-def precompute_mesh_data(step_reader, shp, lind, angd, hacks, part_name=""):
-    """Compute mesh + loop data from OCC shape.
-
-    Returns (mesh, colors, mat_names, norms, uvs).
-    mesh is either TriMesh (Python fallback) or NativeMeshData (C++ path).
-    """
-    if _debug_timing:
-        t0 = time.time()
-
-    mesh = step_reader.build_trimesh(shp, lin_def=lind, ang_def=angd, hacks=hacks,
-                                     part_name=part_name)
-
-    if _debug_timing:
-        t1 = time.time()
-
-    if isinstance(mesh, NativeMeshData):
-        # Native path: numpy vectorized operations
-        mesh.fuse_verts()
-        if _debug_timing: t2 = time.time()
-        mesh.filter_zero_area()
-        if _debug_timing: t3 = time.time()
-        mesh.filter_same_face()
-        if _debug_timing: t4 = time.time()
-        mesh.fill_empty_color()
-        if _debug_timing: t5 = time.time()
-        # Data stays in numpy arrays — no conversion needed
-        colors = mesh.get_loop_colors()
-        mat_names = mesh.get_loop_mat_names()
-        norms = mesh.get_loop_norms()
-        uvs = None  # not used currently
-        if _debug_timing: t6 = time.time()
-    else:
-        # Python fallback: TriMesh path
-        mesh.fuse_verts()
-        if _debug_timing: t2 = time.time()
-        mesh.filter_zero_area()
-        if _debug_timing: t3 = time.time()
-        mesh.filter_same_face()
-        if _debug_timing: t4 = time.time()
-        mesh.fill_empty_color()
-        if _debug_timing: t5 = time.time()
-        colors, mat_names, norms, uvs = mesh.get_all_loop_data()
-        if _debug_timing: t6 = time.time()
-
-    if _debug_timing:
-        _phase2_times["build_trimesh"] += t1 - t0
-        _phase2_times["fuse_verts"] += t2 - t1
-        _phase2_times["filter_zero_area"] += t3 - t2
-        _phase2_times["filter_same_face"] += t4 - t3
-        _phase2_times["fill_empty_color"] += t5 - t4
-        _phase2_times["get_all_loop_data"] += t6 - t5
-
-    return mesh, colors, mat_names, norms, uvs
-
-
-def apply_mesh_to_blender(obj, mesh, colors, mat_names, norms, uvs,
-                          vcol_name="Colors", build_materials=True):
-    """Main-thread only: push precomputed mesh data into a Blender object."""
-    if isinstance(mesh, NativeMeshData):
-        return _apply_native_mesh(obj, mesh, colors, mat_names, norms,
-                                  vcol_name, build_materials)
-    else:
-        return _apply_trimesh(obj, mesh, colors, mat_names, norms, uvs,
-                              vcol_name, build_materials)
-
-
-def _apply_native_mesh(obj, mesh, colors, mat_names, norms,
-                       vcol_name, build_materials):
-    """Fast path: from_pydata + foreach_set, no bmesh for geometry."""
-    n_verts = len(mesh.verts)
-    n_faces = len(mesh.faces)
-    if _debug_timing:
-        print(f"[bm] {n_verts}", end="")
-        t0 = time.time()
-
-    me = obj.data
-
-    # Ensure OBJECT mode for mesh updates
-    active = bpy.context.object
-    prev_mode = active.mode if active else "OBJECT"
-    if prev_mode != "OBJECT":
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-    # Clear existing geometry and material slots (needed for Rebuild Selected)
-    me.clear_geometry()
-    me.materials.clear()
-
-    # Direct mesh creation via foreach_set (avoids numpy→list conversion)
-    me.vertices.add(n_verts)
-    me.vertices.foreach_set("co", mesh.verts.astype(np.float32).ravel())
-    me.loops.add(n_faces * 3)
-    me.loops.foreach_set("vertex_index", mesh.faces.astype(np.int32).ravel())
-    me.polygons.add(n_faces)
-    loop_starts = np.arange(0, n_faces * 3, 3, dtype=np.int32)
-    me.polygons.foreach_set("loop_start", loop_starts)
-    loop_totals = np.full(n_faces, 3, dtype=np.int32)
-    me.polygons.foreach_set("loop_total", loop_totals)
-    me.update()
-    me.validate()
-
-    if _debug_timing:
-        t1 = time.time()
-
-    # -- Vertex colors via foreach_set --
-    if n_faces > 0 and colors is not None and len(colors) > 0:
-        color_attr = me.color_attributes.new(
-            name=vcol_name, type='FLOAT_COLOR', domain='CORNER')
-        # colors is (T*3, 3) float32 — need RGBA (T*3, 4)
-        n_loops = len(colors)
-        rgba = np.ones((n_loops, 4), dtype=np.float32)
-        rgba[:, :3] = colors
-        color_attr.data.foreach_set("color", rgba.ravel())
-
-    # -- Materials --
-    if build_materials and n_faces > 0:
-        # Build per-face material names (use tri_mat_names directly, not per-loop)
-        face_mat_names = mesh.tri_mat_names  # list[str|None] len=n_faces
-        face_colors = mesh.tri_colors        # (n_faces, 3) float32
-
-        # Resolve None names to auto-generated names
-        # Pre-compute quantized color hex for unnamed faces using numpy
-        q = np.round(face_colors * _COLOR_MERGE_PRECISION) / _COLOR_MERGE_PRECISION
-        q_bytes = np.clip((q * 255).astype(np.int32), 0, 255)
-        resolved_names = []
-        for fi in range(n_faces):
-            mn = face_mat_names[fi]
-            if mn is None:
-                r, g, b = q_bytes[fi]
-                mn = f"STEP_{r:02x}{g:02x}{b:02x}"
-            resolved_names.append(mn)
-
-        # Get unique material names and assign indices
-        unique_names = list(dict.fromkeys(resolved_names))  # preserves order
-        name_to_idx = {n: i for i, n in enumerate(unique_names)}
-
-        # Ensure materials exist and attach to object
-        for mn in unique_names:
-            if mn not in bpy.data.materials:
-                # Find the color for this material
-                fi = resolved_names.index(mn)
-                col = tuple(float(x) for x in face_colors[fi])
-                add_material(mn, col[:3], link_vertex_color=False)
-            me.materials.append(bpy.data.materials[mn])
-
-        # Vectorized index assignment
-        mat_indices = np.array([name_to_idx[n] for n in resolved_names], dtype=np.int32)
-        me.polygons.foreach_set("material_index", mat_indices)
-
-    # -- Seam/sharp edges: numpy computation + direct attribute API --
-    # IMPORTANT: we must NOT use a bmesh round-trip here because
-    # bm.from_mesh → bm.to_mesh can reorder loops, which breaks the
-    # normals_split_custom_set mapping (norms follow from_pydata order).
-    sharp_keys, seam_keys, max_v = _compute_edge_attributes(mesh)
-
-    n_edges = len(me.edges)
-    if n_edges > 0 and (len(sharp_keys) > 0 or len(seam_keys) > 0):
-        # Get edge vertex pairs via foreach_get
-        edge_verts = np.zeros(n_edges * 2, dtype=np.int32)
-        me.edges.foreach_get('vertices', edge_verts)
-        edge_verts = edge_verts.reshape(-1, 2)
-
-        v0 = np.minimum(edge_verts[:, 0], edge_verts[:, 1])
-        v1 = np.maximum(edge_verts[:, 0], edge_verts[:, 1])
-        edge_keys = v0.astype(np.int64) * max_v + v1.astype(np.int64)
-
-        if len(seam_keys) > 0:
-            seam_arr = np.isin(edge_keys, seam_keys).astype(bool)
-            me.edges.foreach_set('use_seam', seam_arr)
-
-        if len(sharp_keys) > 0:
-            sharp_arr = np.isin(edge_keys, sharp_keys).astype(bool)
-            sharp_attr = me.attributes.get('sharp_edge')
-            if sharp_attr is None:
-                sharp_attr = me.attributes.new(
-                    name='sharp_edge', type='BOOLEAN', domain='EDGE')
-            sharp_attr.data.foreach_set('value', sharp_arr)
-
-    if norms is not None and len(norms) > 0:
-        me.normals_split_custom_set(norms)
-
-    if prev_mode != "OBJECT":
-        bpy.ops.object.mode_set(mode=prev_mode)
-
-    if _debug_timing:
-        t2 = time.time()
-        _phase2_times["add_to_bm"] += t1 - t0
-        _phase2_times["bpy_update"] += t2 - t1
-
-    return mesh.matrix
-
-
-def _compute_edge_attributes(mesh):
-    """Vectorized computation of seam and sharp edge sets.
-
-    Returns (sharp_keys_packed, seam_keys_packed, max_v) where keys are
-    int64-packed edge keys: min_v * max_v + max_v_of_edge.
-    Caller uses these to look up Blender edges efficiently.
-    """
-    margin = 0.02
-    faces = mesh.faces          # (T, 3) int32
-    loop_norms = mesh.get_loop_norms()  # (T*3, 3) float32
-    verts = mesh.verts          # (V, 3) float32
-    batches = mesh.tri_batches  # (T,) int32
-
-    T = len(faces)
-    if T == 0:
-        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), 1
-
-    max_v = int(np.max(faces)) + 1
-
-    # Build half-edge table: 3 edges per face
-    fi = np.arange(T, dtype=np.int32)
-
-    va = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
-    vb = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
-    corner_a = np.concatenate([fi * 3, fi * 3 + 1, fi * 3 + 2])
-    corner_b = np.concatenate([fi * 3 + 1, fi * 3 + 2, fi * 3])
-    face_of = np.concatenate([fi, fi, fi])
-
-    edge_min = np.minimum(va, vb)
-    edge_max = np.maximum(va, vb)
-    edge_keys = edge_min.astype(np.int64) * max_v + edge_max.astype(np.int64)
-
-    unique_keys, inverse, counts = np.unique(
-        edge_keys, return_inverse=True, return_counts=True)
-
-    # Interior edges only (shared by exactly 2 faces)
-    interior_idx = np.where(counts == 2)[0]
-    if len(interior_idx) == 0:
-        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), max_v
-
-    group_starts = np.zeros(len(unique_keys) + 1, dtype=np.int64)
-    np.cumsum(counts, out=group_starts[1:])
-    order = np.argsort(edge_keys)
-
-    int_starts = group_starts[interior_idx]
-    he0 = order[int_starts]
-    he1 = order[int_starts + 1]
-
-    # --- Normal discontinuity test (cross-batch edges only) ---
-    cross_batch = batches[face_of[he0]] != batches[face_of[he1]]
-    int_edge_keys = unique_keys[interior_idx]
-
-    ev0 = edge_min[he0]
-    ev1 = edge_max[he0]
-
-    # Map half-edge corners to sorted edge vertices
-    he0_a_is_ev0 = (va[he0] == ev0)
-    n0_ev0_c = np.where(he0_a_is_ev0, corner_a[he0], corner_b[he0])
-    n0_ev1_c = np.where(he0_a_is_ev0, corner_b[he0], corner_a[he0])
-    he1_a_is_ev0 = (va[he1] == ev0)
-    n1_ev0_c = np.where(he1_a_is_ev0, corner_a[he1], corner_b[he1])
-    n1_ev1_c = np.where(he1_a_is_ev0, corner_b[he1], corner_a[he1])
-
-    # Get normal vectors (N_interior, 3)
-    norm0_ev0 = loop_norms[n0_ev0_c]
-    norm1_ev0 = loop_norms[n1_ev0_c]
-    norm0_ev1 = loop_norms[n0_ev1_c]
-    norm1_ev1 = loop_norms[n1_ev1_c]
-
-    # Edge direction as projection plane normal
-    plane = verts[ev0] - verts[ev1]
-    plane_len = np.linalg.norm(plane, axis=1, keepdims=True)
-    plane = plane / np.maximum(plane_len, 1e-12)
-
-    def _batch_prjtest(plane, n0, n1):
-        dot0 = np.sum(plane * n0, axis=1, keepdims=True)
-        prj0 = n0 - plane * dot0
-        prj0 = prj0 / np.maximum(np.linalg.norm(prj0, axis=1, keepdims=True), 1e-12)
-        dot1 = np.sum(plane * n1, axis=1, keepdims=True)
-        prj1 = n1 - plane * dot1
-        prj1 = prj1 / np.maximum(np.linalg.norm(prj1, axis=1, keepdims=True), 1e-12)
-        return np.sum(prj0 * prj1, axis=1) < (1.0 - margin)
-
-    sharp_ev0 = _batch_prjtest(plane, norm0_ev0, norm1_ev0)
-    sharp_ev1 = _batch_prjtest(plane, norm0_ev1, norm1_ev1)
-    # Sharp/seam only between different OCC faces WITH normal discontinuity.
-    # Smooth boundaries (e.g. cylinder halves) get neither sharp nor seam.
-    discontinuous = cross_batch & sharp_ev0 & sharp_ev1
-    sharp_keys = int_edge_keys[discontinuous]
-    seam_keys = sharp_keys  # seams only where normals actually split
-
-    return sharp_keys, seam_keys, max_v
-
-
-def _apply_trimesh(obj, mesh, colors, mat_names, norms, uvs,
-                   vcol_name, build_materials):
-    """Original bmesh path for TriMesh objects."""
-    if _debug_timing:
-        print(f"[bm] {len(mesh.verts)}", end="")
-        t0 = time.time()
-    bm = bmesh.new()
-    mesh.add_to_bm(bm, edges_as_seams=True, discontinuity_as_sharp=True)
-    if _debug_timing:
-        t1 = time.time()
-    bpy_update_object_data(
-        obj.data, bm, vcol_name, colors, uvs, norms, mat_names,
-        build_materials=build_materials,
-    )
-    if _debug_timing:
-        t2 = time.time()
-        _phase2_times["add_to_bm"] += t1 - t0
-        _phase2_times["bpy_update"] += t2 - t1
-
-    return mesh.matrix
+    # for obj in created_objs:
+    #     obj.select_set(True)
 
 
 def build_mesh(step_reader, obj, shp, lind, angd, vcol_name="Colors"):
     hacks = set([])
-    if _get_addon_prefs().hack_skip_zero_solids:
+    if bpy.context.scene.stepper.hack_skip_zero_solids:
         hacks.add("skip_solids")
 
-    mesh, colors, mat_names, norms, uvs = precompute_mesh_data(
-        step_reader, shp, lind, angd, hacks)
+    mesh: TriMesh = step_reader.build_trimesh(shp, lin_def=lind, ang_def=angd, hacks=hacks)
 
-    return apply_mesh_to_blender(
-        obj, mesh, colors, mat_names, norms, uvs, vcol_name,
-        build_materials=_get_addon_prefs().build_materials,
+    mesh.fuse_verts()
+    mesh.filter_zero_area()
+    mesh.filter_same_face()
+
+    print(f"[bm] {len(mesh.verts)}", end="")
+    bm = bmesh.new()
+    mesh.add_to_bm(bm, edges_as_seams=True, discontinuity_as_sharp=True)
+    mesh.fill_empty_color()
+    bpy_update_object_data(
+        obj.data,
+        bm,
+        vcol_name,
+        mesh.get_loop_colors(),
+        mesh.get_loop_uvs(),
+        mesh.get_loop_normals(),
+        mesh.get_loop_material_names(),
+        build_materials=bpy.context.scene.stepper.build_materials,
     )
+
+    return mesh.matrix
 
 
 def build_nurbs(step_reader, shp, name):
@@ -777,299 +414,6 @@ def build_nurbs(step_reader, shp, name):
         return bpy.context.view_layer.objects.active
 
 
-def _show_import_issues_popup(failed_parts, recovered_parts):
-    """Show a Blender popup dialog listing parts that had import problems."""
-
-    def draw(self, context):
-        layout = self.layout
-        if recovered_parts:
-            layout.label(text=f"{len(recovered_parts)} part(s) had corrupted geometry and were recovered:")
-            col = layout.column(align=True)
-            for name in recovered_parts[:20]:
-                col.label(text=f"    {name}", icon="FILE_REFRESH")
-            if len(recovered_parts) > 20:
-                col.label(text=f"    ... and {len(recovered_parts) - 20} more")
-            col.label(text="    Recovered parts may have missing faces or appearance.", icon="INFO")
-            layout.separator()
-        if failed_parts:
-            layout.label(text=f"{len(failed_parts)} part(s) produced no geometry:")
-            col = layout.column(align=True)
-            for name in failed_parts[:20]:
-                col.label(text=f"    {name}", icon="ERROR")
-            if len(failed_parts) > 20:
-                col.label(text=f"    ... and {len(failed_parts) - 20} more")
-            col.label(text="    Usually caused by unresolved references in the STEP file.", icon="INFO")
-
-    icon = "ERROR" if failed_parts else "INFO"
-    bpy.context.window_manager.popup_menu(draw, title="STEPper NEXT Import Warning", icon=icon)
-
-
-# ---------------------------------------------------------------------------
-# Material Database helpers
-# ---------------------------------------------------------------------------
-
-_MATDB_TEXT_NAME = "STEPper_MaterialDB"
-_ADDON_DIR = os.path.dirname(os.path.realpath(__file__))
-
-
-def _get_matdb_dir():
-    """Return the MaterialDB folder inside the addon directory, creating it if needed."""
-    d = os.path.join(_ADDON_DIR, "MaterialDB")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _list_matdb_files():
-    """Return list of (filename_without_ext, full_path) for all .blend files in MaterialDB/."""
-    d = _get_matdb_dir()
-    result = []
-    if os.path.isdir(d):
-        for f in sorted(os.listdir(d)):
-            if f.lower().endswith(".blend"):
-                result.append((f[:-6], os.path.join(d, f)))
-    return result
-
-
-def _matdb_enum_items(self, context):
-    """Dynamic enum items for material database selection."""
-    items = [("NONE", "None", "Do not use a material database")]
-    for name, path in _list_matdb_files():
-        items.append((name, name, f"Use material database: {name}"))
-    return items
-
-
-def _get_active_matdb_path(db_name=None):
-    """Return the full path of the active material database, or empty string."""
-    if db_name is None:
-        db_name = _get_addon_prefs().active_matdb
-    if not db_name or db_name == "NONE":
-        return ""
-    path = os.path.join(_get_matdb_dir(), db_name + ".blend")
-    return path if os.path.isfile(path) else ""
-
-
-def _write_material_database(filepath, mappings_dict):
-    """Write material mappings and replacement materials to a .blend database file."""
-    # Remove any leftover temporary text datablock
-    while True:
-        text = bpy.data.texts.get(_MATDB_TEXT_NAME)
-        if text:
-            bpy.data.texts.remove(text)
-        else:
-            break
-
-    text = bpy.data.texts.new(_MATDB_TEXT_NAME)
-    text.write(json.dumps(mappings_dict, indent=2))
-
-    # Collect datablocks to write: the text + all replacement materials.
-    # Linked/library materials (e.g. from asset browser) cannot be written
-    # directly — make temporary local copies for those.
-    datablocks = {text}
-    temp_copies = []
-    for replacement_name in set(mappings_dict.values()):
-        mat = bpy.data.materials.get(replacement_name)
-        if not mat:
-            print(f"STEPper MatDB: Material '{replacement_name}' not found, skipping")
-            continue
-        if mat.library or mat.override_library:
-            # Create a full local copy so it can be written to the database
-            local_copy = mat.copy()
-            local_copy.name = replacement_name  # keep the expected name
-            datablocks.add(local_copy)
-            temp_copies.append(local_copy)
-        else:
-            datablocks.add(mat)
-
-    print(f"STEPper MatDB: Writing {len(datablocks)} datablocks to {filepath}")
-    bpy.data.libraries.write(filepath, datablocks, fake_user=True)
-
-    # Clean up temporary text datablock and any temporary material copies
-    bpy.data.texts.remove(text)
-    for tmp in temp_copies:
-        bpy.data.materials.remove(tmp)
-
-
-def _read_matdb_mappings(filepath):
-    """Read ONLY the JSON mappings from a database .blend file.
-
-    Does NOT append materials.  Returns dict {original_name: replacement_name}.
-    """
-    abs_path = bpy.path.abspath(filepath)
-    if not abs_path or not os.path.isfile(abs_path):
-        return {}
-
-    # Clean up any leftover text block from a previous read
-    while True:
-        text = bpy.data.texts.get(_MATDB_TEXT_NAME)
-        if text:
-            bpy.data.texts.remove(text)
-        else:
-            break
-
-    # Append only the text datablock
-    with bpy.data.libraries.load(abs_path, link=False) as (data_from, data_to):
-        if _MATDB_TEXT_NAME in data_from.texts:
-            data_to.texts = [_MATDB_TEXT_NAME]
-
-    mappings = {}
-    text = bpy.data.texts.get(_MATDB_TEXT_NAME)
-    if text:
-        try:
-            mappings = json.loads(text.as_string())
-        except json.JSONDecodeError:
-            print("STEPper MatDB: Invalid JSON in database file")
-        bpy.data.texts.remove(text)
-    else:
-        print("STEPper MatDB: No mapping text block found in database file")
-
-    return mappings
-
-
-def _append_matdb_materials(filepath):
-    """Append all materials from a database .blend into the current file.
-
-    Materials that already exist locally (by name) are skipped to avoid
-    duplicates.  Returns the number of materials appended.
-    """
-    abs_path = bpy.path.abspath(filepath)
-    if not abs_path or not os.path.isfile(abs_path):
-        return 0
-
-    with bpy.data.libraries.load(abs_path, link=False) as (data_from, data_to):
-        to_append = [m for m in data_from.materials
-                     if m not in bpy.data.materials]
-        data_to.materials = to_append
-
-    count = len(to_append)
-    if count:
-        print(f"STEPper MatDB: Appended {count} material(s) from database")
-    return count
-
-
-def _scan_scene_materials():
-    """Scan scene for STEP objects and determine material mappings.
-
-    For each original STEP material name, find what replacement material is
-    currently assigned.  When an original name maps to multiple different
-    replacements, pick the one with the highest instance count.
-
-    Returns dict {original_name: replacement_name}.
-    """
-    original_to_replacements = {}  # {orig: Counter({repl: count})}
-
-    for obj in bpy.data.objects:
-        if obj.data is None or not hasattr(obj.data, 'materials'):
-            continue
-
-        step_mats_json = obj.get("STEP_materials")
-        if step_mats_json:
-            try:
-                original_names = json.loads(step_mats_json)
-            except (json.JSONDecodeError, TypeError):
-                continue
-        else:
-            # Backward compat: treat current materials as identity mapping
-            original_names = [m.name for m in obj.data.materials if m]
-
-        current_mats = [m.name if m else None for m in obj.data.materials]
-
-        for i, orig_name in enumerate(original_names):
-            if i < len(current_mats) and current_mats[i]:
-                repl_name = current_mats[i]
-                if orig_name not in original_to_replacements:
-                    original_to_replacements[orig_name] = Counter()
-                original_to_replacements[orig_name][repl_name] += 1
-
-    # Resolve conflicts: majority wins
-    mappings = {}
-    for orig_name, counter in original_to_replacements.items():
-        mappings[orig_name] = counter.most_common(1)[0][0]
-
-    return mappings
-
-
-def _ensure_matdb_materials(db_path):
-    """Ensure all materials from a database .blend exist locally.
-
-    Call this before any operation that needs to reference database materials.
-    Returns the mappings dict.
-    """
-    if not db_path:
-        return {}
-    _append_matdb_materials(db_path)
-    return _read_matdb_mappings(db_path)
-
-
-def _apply_matdb_to_objects(objects, mappings):
-    """Replace STEP materials on *objects* according to *mappings* dict.
-
-    Uses the STEP_materials custom property to determine original material
-    names so replacements work even when materials were already swapped by
-    a previous database apply.
-
-    Returns the number of material slots replaced.
-    """
-    if not mappings:
-        return 0
-
-    print(f"Applying material database ({len(mappings)} mappings)")
-
-    replaced = 0
-    processed_meshes = set()
-    for obj in objects:
-        if obj.data is None or not hasattr(obj.data, 'materials'):
-            continue
-        mesh = obj.data
-        if mesh in processed_meshes:
-            continue
-        processed_meshes.add(mesh)
-
-        # Read original STEP material names from the custom property
-        step_mats_json = obj.get("STEP_materials")
-        if step_mats_json:
-            try:
-                original_names = json.loads(step_mats_json)
-            except (json.JSONDecodeError, TypeError):
-                original_names = None
-        else:
-            original_names = None
-
-        for slot_idx in range(len(mesh.materials)):
-            # Determine the original STEP name for this slot
-            if original_names and slot_idx < len(original_names):
-                orig_name = original_names[slot_idx]
-            else:
-                # Fallback: use current material name
-                mat = mesh.materials[slot_idx]
-                orig_name = mat.name if mat else None
-
-            if orig_name and orig_name in mappings:
-                replacement_name = mappings[orig_name]
-                replacement_mat = bpy.data.materials.get(replacement_name)
-                current_mat = mesh.materials[slot_idx]
-                if replacement_mat and replacement_mat != current_mat:
-                    mesh.materials[slot_idx] = replacement_mat
-                    replaced += 1
-
-    return replaced
-
-
-def _cleanup_unused_step_materials():
-    """Remove materials with zero users that were generated by STEP import."""
-    removed = 0
-    # Iterate over a snapshot since we're modifying the collection
-    for mat in list(bpy.data.materials):
-        if mat.users == 0 and (mat.name.startswith("STEP_") or not mat.name.startswith(".")):
-            # Only remove materials that look like STEP-generated ones
-            # (named colors like "GRAY", hex like "STEP_808080", etc.)
-            # Safety: only remove if truly zero users
-            bpy.data.materials.remove(mat)
-            removed += 1
-    if removed:
-        print(f"STEPper MatDB: Removed {removed} unused material(s)")
-    return removed
-
-
 def load_step(
     context,
     filepath,
@@ -1079,28 +423,23 @@ def load_step(
     # merge_distance=0.001,
     up_as="Y",
     htypes="TREE",
-    apply_scale=True,
-    material_database="NONE",
 ):
     from . import importer
-
-    global _debug_timing
-    _debug_timing = _get_addon_prefs().debug_timing
 
     hierarchy_flat, hierarchy_tree, hierarchy_empties = choose_hierarchy_types(htypes)
 
     filename = "".join(ntpath.basename(filepath).split(".")[:-1])
 
-    cached = _cache_get(filepath)
-    if cached is None:
+    if filepath not in global_file_cache:
         try:
             step_reader = importer.ReadSTEP(filepath)
-            _cache_put(filepath, step_reader)
+            global_file_cache[filepath] = step_reader
         except AssertionError as e:
             print(e)
             return False
+
     else:
-        step_reader = cached
+        step_reader = global_file_cache[filepath]
         print("Loaded file from cache")
 
     tree = step_reader.tree
@@ -1123,91 +462,6 @@ def load_step(
     all_shapes = tree.get_shapes()
     total = len(all_shapes)
 
-    # Tessellation is done on-demand inside build_trimesh (per shape).
-    # Pre-tessellation was removed: the threading it used caused race
-    # conditions leading to costly [re-tess] retessellations later.
-
-    # Eagerly build recovery compounds (only needed for corrupt STEP files
-    # with unresolved references).  Running it here makes the cost visible
-    # instead of hiding it inside the first build_trimesh call.
-    if step_reader.import_problems.get("Unresolved refs", 0) > 0 or True:
-        # Always try — the reader checks internally if recovery is needed
-        rec_start = time.time()
-        step_reader._build_recovery_compound()
-        rec_dt = time.time() - rec_start
-        if rec_dt > 0.5:
-            n_compounds = len(step_reader._recovery_compounds) if step_reader._recovery_compounds else 0
-            print(f"\n--- Recovery compounds built in {rec_dt:.2f}s ({n_compounds} compounds) ---")
-
-    # Pre-compute mesh data for all unique shapes before the bpy loop.
-    # This lets us batch-create materials upfront and keeps the Phase 2
-    # loop focused on the fast bmesh/bpy work.
-    _reset_phase2_times()
-    hacks = set()
-    if _get_addon_prefs().hack_skip_zero_solids:
-        hacks.add("skip_solids")
-    build_materials = _get_addon_prefs().build_materials
-
-    # Identify unique shapes (first occurrence per shape_name)
-    unique_shapes = {}  # shape_name -> (shp, part_name)
-    for shp, node_index in all_shapes:
-        if shp is None:
-            continue
-        _, _, tag, part_name, _, _, _ = tree.nodes[node_index].get_values()
-        shape_name = "tt_" + repr(tag)
-        if shape_name not in unique_shapes:
-            unique_shapes[shape_name] = (shp, part_name)
-
-    precomputed = {}  # shape_name -> (mesh, colors, mat_names, norms, uvs)
-    n_unique = len(unique_shapes)
-    if n_unique > 0:
-        print(f"\n--- Phase 1/3: Pre-computing {n_unique} unique meshes ---")
-        precomp_start = time.time()
-
-        last_pct_10 = 0
-        for si, (sname, (shp, part_name)) in enumerate(unique_shapes.items()):
-            try:
-                if _debug_timing:
-                    t_shape = time.time()
-                precomputed[sname] = precompute_mesh_data(
-                    step_reader, shp, lin_deflection, ang_deflection, hacks,
-                    part_name=part_name)
-                if _debug_timing:
-                    dt_shape = time.time() - t_shape
-                    if dt_shape > 2.0:
-                        pname = part_name or sname
-                        print(f"\n  [{pname}: {dt_shape:.1f}s]", end="", flush=True)
-            except Exception as e:
-                print(f"\nWarning: precompute failed for {sname} ({part_name}): {e}")
-
-            pct_10 = (100 * (si + 1) // n_unique) // 10 * 10
-            if pct_10 > last_pct_10:
-                print(f"\n  Phase 1: {pct_10}%", end="", flush=True)
-                last_pct_10 = pct_10
-
-        print(f"\nPre-compute done in {time.time() - precomp_start:.2f}s")
-
-    # Pre-create all materials so bpy_update_object_data doesn't do it per-face
-    if build_materials and precomputed:
-        all_mat_info = {}  # mat_name -> color
-        for mesh, colors, mat_names, norms, uvs in precomputed.values():
-            for ci, mname in enumerate(mat_names):
-                if mname:
-                    if mname not in all_mat_info:
-                        c = colors[ci]
-                        all_mat_info[mname] = tuple(float(x) for x in c)
-                else:
-                    c = colors[ci]
-                    col = tuple(float(x) for x in c) if ci < len(colors) and c[0] >= 0.0 else (0.5, 0.5, 0.5)
-                    col = _quantize_color(col)
-                    auto_name = "STEP_" + "".join("{0:0{1}x}".format(int(col[i] * 255), 2) for i in range(3))
-                    if auto_name not in all_mat_info:
-                        all_mat_info[auto_name] = col
-        for mname, col in all_mat_info.items():
-            if mname not in bpy.data.materials:
-                add_material(mname, col, link_vertex_color=False)
-
-    print(f"\n--- Phase 2/3: Building {total} Blender objects ---")
     wm.progress_begin(0, total)
     for i, (shp, node_index) in enumerate(all_shapes):
         parent_uuid, self_uuid, tag, name, _, local_t, global_t = tree.nodes[node_index].get_values()
@@ -1221,46 +475,32 @@ def load_step(
 
         # Shape found in leaf
         if shp:
-            if _debug_timing:
-                print("\nBuilding ({}/{}): {} ".format(i + 1, total, name), end="", flush=True)
-                print("[T" + repr(shp.ShapeType()) + "]", end="", flush=True)
+            print("\nBuilding ({}/{}): {} ".format(i + 1, total, name), end="", flush=True)
+            print("[T" + repr(shp.ShapeType()) + "]", end="", flush=True)
 
-            # If object already built, just copy it using linked mesh data
+            # If object already build, just copy it, using linked mesh data
             if shape_name in created_names:
-                if _debug_timing:
-                    print("[Link]", end="", flush=True)
+                print("[Link]", end="", flush=True)
 
                 source_obj = created_names[shape_name]
                 obj = source_obj.copy()
                 created_objs.append(obj)
             else:
-                if _debug_timing:
-                    print("[Build]", end="", flush=True)
+                print("[Build]", end="", flush=True)
 
+                # Create new mesh and object from scratch
                 obj = create_new_obj_with_mesh(name)
+                bpy.ops.object.mode_set(mode="OBJECT")
+                build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
 
-                if shape_name in precomputed:
-                    # Use pre-computed data — only bpy/bmesh work on main thread
-                    mesh, colors, mat_names, norms, uvs = precomputed[shape_name]
-                    apply_mesh_to_blender(
-                        obj, mesh, colors, mat_names, norms, uvs,
-                        build_materials=build_materials)
-                else:
-                    # Fallback for shapes that failed precompute
-                    build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
+                # TODO: nurbs changes here
+                # obj = build_nurbs(step_reader, shp, name)
 
-                # Track parts that produced no geometry
-                if obj.data is not None and len(obj.data.vertices) == 0:
-                    step_reader.failed_parts.append(name)
-                    if _get_addon_prefs().skip_empty_objects:
-                        mesh_data = obj.data
-                        bpy.data.objects.remove(obj)
-                        bpy.data.meshes.remove(mesh_data)
-                        obj = None
+                created_objs.append(obj)
+                created_names[shape_name] = obj
 
-                if obj is not None:
-                    created_objs.append(obj)
-                    created_names[shape_name] = obj
+                # bpy.ops.object.mode_set(mode="OBJECT")
+                # build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
 
         # No shape in leaf, empty creation enabled, do this
         elif hierarchy_empties:
@@ -1280,15 +520,9 @@ def load_step(
             obj["STEP_file"] = filepath
             obj["STEP_name"] = name
             obj["STEP_tree_location"] = node_index
-            obj["STEP_applied_scale"] = scale if apply_scale else 0.0
-            # Store original STEP material names for material database feature
-            if obj.data is not None and hasattr(obj.data, 'materials') and obj.data.materials:
-                obj["STEP_materials"] = json.dumps([m.name if m else "" for m in obj.data.materials])
             created_uuid[self_uuid] = obj
 
     # assert len(created_objs) == len(shapes_labels)
-    if _debug_timing:
-        _print_phase2_times()
     print("\n" + repr(step_reader.import_problems))
 
     # remove all temporary links
@@ -1327,34 +561,26 @@ def load_step(
         hierarchy_collections = {}
         hierarchy_collections[-1] = tree_collection
 
-        root = tree.nodes[0]
-        # Map root node to tree collection so objects with STEP_parent=0 resolve
-        hierarchy_collections[root.index] = tree_collection
+        def node_parse(node, level, parent_collection):
+            # if "name" in node and node["children"] is not None:
+            if len(node.children) > 0:
+                collection_node = bpy.data.collections.new(node.name)
+                assert node.index not in hierarchy_collections
+                hierarchy_collections[node.index] = collection_node
 
+                parent_collection.children.link(collection_node)
+                for c in node.children:
+                    node_parse(tree.nodes[c], level + 1, collection_node)
+
+        root = tree.nodes[0]
         if len(root.children) > 0:
-            # Iterative tree traversal (avoids recursion limit on deep assemblies)
-            stack = list(reversed([(c, 0, tree_collection) for c in root.children]))
-            while stack:
-                node_idx, level, parent_collection = stack.pop()
-                node = tree.nodes[node_idx]
-                if len(node.children) > 0:
-                    collection_node = bpy.data.collections.new(node.name)
-                    assert node.index not in hierarchy_collections
-                    hierarchy_collections[node.index] = collection_node
-                    parent_collection.children.link(collection_node)
-                    for c in reversed(node.children):
-                        stack.append((c, level + 1, collection_node))
+            for c in root.children:
+                node_parse(tree.nodes[c], 0, tree_collection)
 
             # link objects to tree
             if len(hierarchy_collections.items()) > 0:
                 for obj in created_objs:
-                    parent_id = obj.get("STEP_parent", -1)
-                    if parent_id in hierarchy_collections:
-                        hierarchy_collections[parent_id].objects.link(obj)
-                    elif -1 in hierarchy_collections:
-                        hierarchy_collections[-1].objects.link(obj)
-                    else:
-                        bpy.context.scene.collection.objects.link(obj)
+                    hierarchy_collections[obj["STEP_parent"]].objects.link(obj)
                     global_t = tree.nodes[obj["STEP_tree_location"]].global_transform
                     set_obj_matrix_world(obj, global_t)
 
@@ -1372,68 +598,33 @@ def load_step(
                 obj.parent = parent
                 obj.matrix_parent_inverse = parent.matrix_world.inverted()
 
-    # Apply material database replacements (before transforms)
-    db_path = _get_active_matdb_path(material_database)
-    if db_path:
-        mappings = _ensure_matdb_materials(db_path)
-        _apply_matdb_to_objects(created_objs, mappings)
-        _cleanup_unused_step_materials()
-
-    print(f"\n--- Phase 3/3: Applying transforms ---")
-    transform_to_up(up_as[0], created_objs, scale, apply_scale=apply_scale)
+    transform_to_up(up_as[0], created_objs, scale)
 
     wm.progress_end()
-    elapsed = time.time() - start_time
+    print(f"STEP loading time elapsed: {time.time()-start_time:.2f}")
 
-    # Import summary report
-    n_objects = len(created_objs)
-    n_unique = len(created_names)
-    n_linked = n_objects - n_unique
-    print(f"\n{'='*50}")
-    print(f"  STEPper NEXT Import Summary")
-    print(f"{'='*50}")
-    print(f"  File:    {filename}")
-    print(f"  Objects: {n_objects} ({n_unique} unique, {n_linked} linked copies)")
-    print(f"  Scale:   {scale:.6f} m/unit")
-    print(f"  Time:    {elapsed:.2f}s")
-    has_problems = False
-    for k, v in step_reader.import_problems.items():
-        if v > 0:
-            print(f"  Warning - {k}: {v}")
-            has_problems = True
-    if step_reader.skipped_shapes:
-        print(f"  Skipped: {len(step_reader.skipped_shapes)} shapes")
-        has_problems = True
-    if step_reader.recovered_parts:
-        print(f"  Recovered parts ({len(step_reader.recovered_parts)}):")
-        for rp_name in step_reader.recovered_parts:
-            print(f"    - {rp_name}")
-        has_problems = True
-    if step_reader.failed_parts:
-        print(f"  Failed parts ({len(step_reader.failed_parts)}):")
-        for fp_name in step_reader.failed_parts:
-            print(f"    - {fp_name}")
-        has_problems = True
-    if not has_problems:
-        print(f"  No warnings")
-    print(f"{'='*50}")
-
-    # Return lists of failed/recovered part names (empty = full success)
-    return step_reader.failed_parts, step_reader.recovered_parts
-
-
-class PG_MaterialMapping(bpy.types.PropertyGroup):
-    """A single original-name -> replacement-material mapping entry."""
-    original_name: bpy.props.StringProperty(name="Original Name")
-    replacement_name: bpy.props.StringProperty(name="Replacement")
+    return True
 
 
 class PG_Stepper(bpy.types.PropertyGroup):
-    """Per-scene properties (import parameters, file paths).
+    build_materials: bpy.props.BoolProperty(
+        name="Build materials",
+        description="Build materials from STEP file colors",
+        default=True,
+    )
 
-    Persistent settings (build_materials, debug_timing, etc.) live on
-    STEP_AddonPreferences and are accessed via _get_addon_prefs().
-    """
+    hack_skip_zero_solids: bpy.props.BoolProperty(
+        name="Skip faulty solids",
+        description="Skip some shapes the library hangs on and fails to load",
+        default=False,
+    )
+
+    simpler_parameters: bpy.props.BoolProperty(
+        name="Artist friendly parameters",
+        description="Instead of linear and angle deflection values, use only detail setting",
+        default=True,
+    )
+
     detail_level: bpy.props.IntProperty(
         name="Mesh detail",
         description="How detailed you want the mesh to be",
@@ -1463,15 +654,6 @@ class PG_Stepper(bpy.types.PropertyGroup):
         default="",
         maxlen=1024,
         subtype="FILE_PATH",
-    )
-
-    # Material database UI state
-    mat_db_mappings: bpy.props.CollectionProperty(type=PG_MaterialMapping)
-    mat_db_active_index: bpy.props.IntProperty(default=0)
-    mat_db_apply_selection_only: bpy.props.BoolProperty(
-        name="Selection only",
-        description="Apply material mappings only to selected objects",
-        default=False,
     )
 
 
@@ -1557,18 +739,6 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
         default=False,
     )
 
-    apply_scale: bpy.props.BoolProperty(
-        name="Apply scale",
-        description="Bake scale into mesh vertices so object scale is (1, 1, 1)",
-        default=True,
-    )
-
-    material_database: bpy.props.EnumProperty(
-        items=_matdb_enum_items,
-        name="Material Database",
-        description="Replace STEP materials using a material database",
-    )
-
     def draw(self, context):
         layout = self.layout
 
@@ -1580,7 +750,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
 
         row = layout.row()
 
-        row.label(text="STEPper NEXT import options:")
+        row.label(text="STEPper import options:")
 
         col = layout.box()
         col = col.column(align=True)
@@ -1591,10 +761,10 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
             row = col.row()
             row.prop(self, "user_scale")
 
-        row = col.row()
-        row.prop(self, "apply_scale")
+        # row = col.row()
+        # row.prop(self, "merge_distance")
 
-        if _get_addon_prefs().simpler_parameters:
+        if bpy.context.scene.stepper.simpler_parameters:
             row = col.row()
             row.prop(self, "detail_level")
 
@@ -1614,27 +784,13 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
         row = col.row()
         row.prop(self, "hierarchy_types", text="Hierarchy")
 
-        spacer(col)
-        row = col.row()
-        row.prop(self, "material_database", text="Material DB")
-
-    def invoke(self, context, event):
-        # Default the material database dropdown to the addon preference
-        prefs = _get_addon_prefs()
-        if prefs.active_matdb and prefs.active_matdb != "NONE":
-            # Verify it's still a valid option
-            valid = {name for name, _ in _list_matdb_files()}
-            if prefs.active_matdb in valid:
-                self.material_database = prefs.active_matdb
-        return super().invoke(context, event)
-
     def execute(self, context):
         folder = os.path.dirname(self.filepath)
 
         # print(type(self.files))
         # print(dir(self.files))
         l_def, a_def = self.lin_deflection, self.ang_deflection
-        if _get_addon_prefs().simpler_parameters:
+        if bpy.context.scene.stepper.simpler_parameters:
             a_def, l_def = calculate_detail_level(self.detail_level)
 
         import_files = [i.name for i in self.files]
@@ -1643,8 +799,6 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
             import_files = [self.override_file]
 
         # iterate through the selected files
-        all_failed_parts = []
-        all_recovered_parts = []
         for j, i in enumerate(import_files):
             # generate full path to file
             path_to_file = os.path.join(folder, i)
@@ -1657,26 +811,12 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
                 ang_deflection=a_def,
                 up_as=self.up_as,
                 htypes=self.hierarchy_types,
-                apply_scale=self.apply_scale,
-                material_database=self.material_database,
             )
-            if result is False:
-                self.report({"ERROR"}, "STEP file could not be opened. Possibly damaged file.")
-                return {"CANCELLED"}
-            failed, recovered = result
-            all_failed_parts.extend(failed)
-            all_recovered_parts.extend(recovered)
-
-        if all_failed_parts or all_recovered_parts:
-            _show_import_issues_popup(all_failed_parts, all_recovered_parts)
-            if all_failed_parts:
-                msg = f"{len(all_failed_parts)} part(s) imported with no geometry."
-                self.report({"WARNING"}, msg)
-            if all_recovered_parts:
-                msg = f"{len(all_recovered_parts)} part(s) recovered from corrupted geometry."
-                self.report({"INFO"}, msg)
-
-        return {"FINISHED"}
+        if result:
+            return {"FINISHED"}
+        else:
+            self.report({"ERROR"}, "STEP file could not be opened. Possibly damaged file.")
+            return {"CANCELLED"}
 
 
 class STEP_OT_ClearCache(bpy.types.Operator):
@@ -1783,26 +923,7 @@ class STEP_OT_ReloadSTEP(bpy.types.Operator):
 
         filepath = context.object["STEP_file"]
         step_reader = importer.ReadSTEP(filepath)
-        _cache_put(filepath, step_reader)
-        return {"FINISHED"}
-
-
-class STEP_OT_ClearFileCache(bpy.types.Operator):
-    bl_idname = "object.occ_clear_file_cache"
-    bl_label = "Clear this file from cache"
-    bl_description = "Remove the selected object's STEP file from cache (next import re-reads from disk)"
-
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None and "STEP_file" in context.object
-
-    def execute(self, context):
-        filepath = context.object["STEP_file"]
-        if filepath in global_file_cache:
-            del global_file_cache[filepath]
-            self.report({"INFO"}, f"Cleared cache for: {os.path.basename(filepath)}")
-        else:
-            self.report({"WARNING"}, "File not in cache")
+        global_file_cache[filepath] = step_reader
         return {"FINISHED"}
 
 
@@ -1826,7 +947,7 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
         ang_def = context.scene.stepper.ang_deflection
         lin_def = context.scene.stepper.lin_deflection
         # merge_distance = context.scene.stepper.merge_distance
-        if _get_addon_prefs().simpler_parameters:
+        if bpy.context.scene.stepper.simpler_parameters:
             ang_def, lin_def = calculate_detail_level(bpy.context.scene.stepper.detail_level)
 
         # select all objs with the same meshes
@@ -1851,9 +972,9 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
                 continue
 
             if prevname != curname:
-                cached_reader = _cache_get(curname)
-                if cached_reader is not None:
-                    step_reader = cached_reader
+                if curname in global_file_cache:
+                    step_reader = global_file_cache[curname]
+                    # shapes_labels = step_reader.output_shapes
                     tree = step_reader.tree
                 else:
                     self.report(
@@ -1868,21 +989,7 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
                 if tag == sel_tag:
                     rebuilt_meshes.add(sel_tag)
                     print("Rebuilding:", sel_tag, obj.data.name)
-                    # Reset pre-tessellation flag so shapes get re-tessellated
-                    # with the new deflection values
-                    step_reader._pre_tessellated = False
                     build_mesh(step_reader, obj, shp, lin_def, ang_def)
-                    # Re-apply baked scale if it was applied during import
-                    applied_scale = obj.get("STEP_applied_scale", 0.0)
-                    if applied_scale and applied_scale != 1.0:
-                        mesh = obj.data
-                        vert_count = len(mesh.vertices)
-                        if vert_count > 0:
-                            verts = np.empty(vert_count * 3, dtype=np.float32)
-                            mesh.vertices.foreach_get('co', verts)
-                            verts *= applied_scale
-                            mesh.vertices.foreach_set('co', verts)
-                            mesh.update()
                     obj.display_type = "TEXTURED"
                     build_tags.add(obj["STEP_tag"])
                     break
@@ -1894,324 +1001,14 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
         for obj in context.selected_objects:
             obj.display_type = "TEXTURED"
 
-        # Re-apply active material database if one is set
-        db_path = _get_active_matdb_path()
-        if db_path:
-            mappings = _ensure_matdb_materials(db_path)
-            _apply_matdb_to_objects(my_selection, mappings)
-
         return {"FINISHED"}
 
 
-# ---------------------------------------------------------------------------
-# Material Database operators
-# ---------------------------------------------------------------------------
-
-class STEP_OT_MatDBCreate(bpy.types.Operator):
-    """Create a new material database from the current scene"""
-    bl_idname = "stepper.mat_db_create"
-    bl_label = "Create Material Database"
-
-    db_name: bpy.props.StringProperty(
-        name="Database Name",
-        description="Name for the new material database",
-        default="material_database",
-    )
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-
-    def execute(self, context):
-        name = self.db_name.strip()
-        if not name:
-            self.report({'ERROR'}, "Database name cannot be empty")
-            return {'CANCELLED'}
-
-        filepath = os.path.join(_get_matdb_dir(), name + ".blend")
-
-        mappings = _scan_scene_materials()
-        if not mappings:
-            self.report({'WARNING'}, "No STEP materials found in scene")
-            return {'CANCELLED'}
-
-        _write_material_database(filepath, mappings)
-
-        # Set as active database and load into UI
-        prefs = _get_addon_prefs()
-        prefs.active_matdb = name
-        _populate_ui_mappings(context.scene.stepper, mappings)
-
-        self.report({'INFO'}, f"Created '{name}' with {len(mappings)} mapping(s)")
-        return {'FINISHED'}
-
-
-class STEP_OT_MatDBDuplicate(bpy.types.Operator):
-    """Duplicate the active material database with a new name"""
-    bl_idname = "stepper.mat_db_duplicate"
-    bl_label = "Duplicate Material Database"
-
-    db_name: bpy.props.StringProperty(
-        name="New Name",
-        description="Name for the duplicated database",
-        default="",
-    )
-
-    @classmethod
-    def poll(cls, context):
-        return bool(_get_active_matdb_path())
-
-    def invoke(self, context, event):
-        prefs = _get_addon_prefs()
-        self.db_name = prefs.active_matdb + "_copy"
-        return context.window_manager.invoke_props_dialog(self)
-
-    def execute(self, context):
-        import shutil
-
-        name = self.db_name.strip()
-        if not name:
-            self.report({'ERROR'}, "Database name cannot be empty")
-            return {'CANCELLED'}
-
-        src = _get_active_matdb_path()
-        dst = os.path.join(_get_matdb_dir(), name + ".blend")
-        if os.path.exists(dst):
-            self.report({'ERROR'}, f"Database '{name}' already exists")
-            return {'CANCELLED'}
-
-        shutil.copy2(src, dst)
-
-        prefs = _get_addon_prefs()
-        prefs.active_matdb = name
-        # Reload mappings from the copy
-        mappings = _read_matdb_mappings(dst)
-        _populate_ui_mappings(context.scene.stepper, mappings)
-
-        self.report({'INFO'}, f"Duplicated to '{name}'")
-        return {'FINISHED'}
-
-
-class STEP_OT_MatDBRefresh(bpy.types.Operator):
-    """Reload mappings from the active database file and append its materials"""
-    bl_idname = "stepper.mat_db_refresh"
-    bl_label = "Load Material Database"
-
-    @classmethod
-    def poll(cls, context):
-        return bool(_get_active_matdb_path())
-
-    def execute(self, context):
-        db_path = _get_active_matdb_path()
-
-        # Append materials first so they show up in the UI prop_search
-        _append_matdb_materials(db_path)
-
-        mappings = _read_matdb_mappings(db_path)
-        if not mappings:
-            self.report({'WARNING'}, "No mappings found in database")
-            return {'CANCELLED'}
-
-        _populate_ui_mappings(context.scene.stepper, mappings)
-        self.report({'INFO'}, f"Loaded {len(mappings)} mapping(s)")
-        return {'FINISHED'}
-
-
-class STEP_OT_MatDBUpdate(bpy.types.Operator):
-    """Add new original material names from the scene to the database"""
-    bl_idname = "stepper.mat_db_update"
-    bl_label = "Update Material Database"
-
-    @classmethod
-    def poll(cls, context):
-        return len(context.scene.stepper.mat_db_mappings) > 0
-
-    def execute(self, context):
-        stepper = context.scene.stepper
-        scene_mappings = _scan_scene_materials()
-
-        # Existing originals in the UI list
-        existing = {item.original_name for item in stepper.mat_db_mappings}
-
-        added = 0
-        for orig, repl in scene_mappings.items():
-            if orig not in existing:
-                item = stepper.mat_db_mappings.add()
-                item.original_name = orig
-                item.replacement_name = repl
-                added += 1
-
-        if added:
-            self.report({'INFO'}, f"Added {added} new mapping(s). Press Save to write to database.")
-        else:
-            self.report({'INFO'}, "No new materials to add")
-        return {'FINISHED'}
-
-
-class STEP_OT_MatDBSave(bpy.types.Operator):
-    """Save current mappings to the active database file"""
-    bl_idname = "stepper.mat_db_save"
-    bl_label = "Save Material Database"
-
-    @classmethod
-    def poll(cls, context):
-        return bool(_get_active_matdb_path()) and len(context.scene.stepper.mat_db_mappings) > 0
-
-    def execute(self, context):
-        stepper = context.scene.stepper
-        filepath = _get_active_matdb_path()
-
-        mappings = {}
-        for item in stepper.mat_db_mappings:
-            mappings[item.original_name] = item.replacement_name
-
-        _write_material_database(filepath, mappings)
-        self.report({'INFO'}, f"Saved {len(mappings)} mapping(s) to database")
-        return {'FINISHED'}
-
-
-class STEP_OT_MatDBDelete(bpy.types.Operator):
-    """Delete the active material database file"""
-    bl_idname = "stepper.mat_db_delete"
-    bl_label = "Delete Material Database"
-
-    @classmethod
-    def poll(cls, context):
-        return bool(_get_active_matdb_path())
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_confirm(self, event)
-
-    def execute(self, context):
-        prefs = _get_addon_prefs()
-        db_path = _get_active_matdb_path()
-        name = prefs.active_matdb
-
-        try:
-            os.remove(db_path)
-        except OSError as e:
-            self.report({'ERROR'}, f"Could not delete database: {e}")
-            return {'CANCELLED'}
-
-        prefs.active_matdb = "NONE"
-        context.scene.stepper.mat_db_mappings.clear()
-        self.report({'INFO'}, f"Deleted database '{name}'")
-        return {'FINISHED'}
-
-
-class STEP_OT_MatDBApply(bpy.types.Operator):
-    """Apply material mappings from the active database to objects in the scene"""
-    bl_idname = "stepper.mat_db_apply"
-    bl_label = "Apply Material Database"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return bool(_get_active_matdb_path())
-
-    def invoke(self, context, event):
-        # Append materials / read mappings BEFORE the undo step
-        db_path = _get_active_matdb_path()
-        self._mappings = _ensure_matdb_materials(db_path)
-        if not self._mappings:
-            self.report({'WARNING'}, "No mappings found in database")
-            return {'CANCELLED'}
-        return self.execute(context)
-
-    def execute(self, context):
-        stepper = context.scene.stepper
-
-        if stepper.mat_db_apply_selection_only:
-            objects = list(context.selected_objects)
-        else:
-            objects = [obj for obj in bpy.data.objects
-                       if obj.get("STEP_file") is not None]
-
-        if not objects:
-            self.report({'WARNING'}, "No STEP objects found")
-            return {'CANCELLED'}
-
-        replaced = _apply_matdb_to_objects(objects, self._mappings)
-        _cleanup_unused_step_materials()
-        self.report({'INFO'}, f"Replaced {replaced} material(s) across {len(objects)} object(s)")
-        return {'FINISHED'}
-
-
-def _populate_ui_mappings(stepper, mappings):
-    """Fill the UI CollectionProperty from a mappings dict."""
-    stepper.mat_db_mappings.clear()
-    for orig, repl in sorted(mappings.items()):
-        item = stepper.mat_db_mappings.add()
-        item.original_name = orig
-        item.replacement_name = repl
-
-
-# ---------------------------------------------------------------------------
-# Material Database UI
-# ---------------------------------------------------------------------------
-
-class STEP_UL_MaterialMappings(bpy.types.UIList):
-    def draw_item(self, context, layout, data, item, icon, active_data,
-                  active_property, index):
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            split = layout.split(factor=0.45, align=True)
-            split.label(text=item.original_name + "  \u2192", icon='MATERIAL')
-            split.prop_search(item, "replacement_name", bpy.data, "materials", text="")
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text=item.original_name)
-
-
-class STEP_PT_MaterialDB(bpy.types.Panel):
-    bl_label = "STEPper NEXT: Material DB"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "STEPper NEXT"
-
-    def draw(self, context):
-        layout = self.layout
-        stepper = context.scene.stepper
-        prefs = _get_addon_prefs()
-
-        # Database selector
-        box = layout.box()
-        box.label(text="Database")
-        row = box.row(align=True)
-        row.prop(prefs, "active_matdb", text="")
-        sub = row.row(align=True)
-        sub.enabled = prefs.active_matdb != "NONE"
-        sub.operator("stepper.mat_db_delete", text="", icon='TRASH')
-
-        row = box.row(align=True)
-        row.operator("stepper.mat_db_create", text="New", icon='ADD')
-        sub = row.row(align=True)
-        sub.enabled = prefs.active_matdb != "NONE"
-        sub.operator("stepper.mat_db_duplicate", text="Duplicate", icon='DUPLICATE')
-        row.operator("stepper.mat_db_refresh", text="Load", icon='IMPORT')
-
-        # Mappings list
-        if len(stepper.mat_db_mappings) > 0:
-            box = layout.box()
-            box.label(text="Material Mappings")
-            box.template_list(
-                "STEP_UL_MaterialMappings", "",
-                stepper, "mat_db_mappings",
-                stepper, "mat_db_active_index",
-                rows=5,
-            )
-            row = box.row(align=True)
-            row.operator("stepper.mat_db_update", text="Update", icon='FILE_REFRESH')
-            row.operator("stepper.mat_db_save", text="Save", icon='EXPORT')
-
-            row = box.row(align=True)
-            row.operator("stepper.mat_db_apply", text="Apply", icon='CHECKMARK')
-            row.prop(stepper, "mat_db_apply_selection_only")
-
-
 class STEP_PT_STEPper(bpy.types.Panel):
-    bl_label = "STEPper NEXT: Build"
+    bl_label = "STEPper: Build"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "STEPper NEXT"
+    bl_category = "Stepper"
 
     def draw(self, context):
         prg = context.scene.stepper
@@ -2230,7 +1027,7 @@ class STEP_PT_STEPper(bpy.types.Panel):
         # row = col.row()
         # row.prop(prg, "merge_distance")
 
-        if _get_addon_prefs().simpler_parameters:
+        if bpy.context.scene.stepper.simpler_parameters:
             row = col.row()
             row.prop(prg, "detail_level")
 
@@ -2248,37 +1045,31 @@ class STEP_PT_STEPper(bpy.types.Panel):
 
 
 class STEP_PT_STEPper_Reload(bpy.types.Panel):
-    bl_label = "STEPper NEXT: File"
+    bl_label = "STEPper: File"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "STEPper NEXT"
+    bl_category = "Stepper"
 
     def draw(self, context):
         layout = self.layout
         row = layout.row()
         row.operator(STEP_OT_ReloadSTEP.bl_idname, text="Reload STEP file")
-        row = layout.row()
-        row.operator(STEP_OT_ClearFileCache.bl_idname, text="Clear this file from cache")
-        row = layout.row()
-        row.operator(STEP_OT_ClearCache.bl_idname, text="Clear all cache")
-        row = layout.row()
-        row.label(text=f"Cached files: {len(global_file_cache)}/{MAX_FILE_CACHE}")
 
 
 class STEP_PT_STEPper_Debug(bpy.types.Panel):
-    bl_label = "STEPper NEXT: Debug"
+    bl_label = "STEPper: Debug"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "STEPper NEXT"
+    bl_category = "Stepper"
 
     def draw(self, context):
         layout = self.layout
-        prg = context.scene.stepper
 
         bxp = layout.box()
         bxp.label(text="Enforce ASCII")
         col = bxp.row().column(align=True)
 
+        prg = context.scene.stepper
         row = col.row()
         row.prop(prg, "fix_ascii_file")
         row = col.row()
@@ -2321,49 +1112,8 @@ class STEP_PT_STEPper_Debug(bpy.types.Panel):
             row.label(text="Select active STEP object")
 
 
-def _get_addon_prefs():
-    """Return the addon preferences instance."""
-    return bpy.context.preferences.addons[__package__].preferences
-
-
 class STEP_AddonPreferences(bpy.types.AddonPreferences):
-    bl_idname = __package__
-
-    build_materials: bpy.props.BoolProperty(
-        name="Build materials",
-        description="Build materials from STEP file colors",
-        default=True,
-    )
-
-    hack_skip_zero_solids: bpy.props.BoolProperty(
-        name="Skip faulty solids",
-        description="Skip corrupted/empty parts entirely (no healing or recovery attempts)",
-        default=False,
-    )
-
-    simpler_parameters: bpy.props.BoolProperty(
-        name="Artist friendly parameters",
-        description="Instead of linear and angle deflection values, use only detail setting",
-        default=True,
-    )
-
-    skip_empty_objects: bpy.props.BoolProperty(
-        name="Skip empty objects",
-        description="Don't create objects for parts that produce no geometry",
-        default=True,
-    )
-
-    debug_timing: bpy.props.BoolProperty(
-        name="Debug timing",
-        description="Print detailed timing information during import",
-        default=False,
-    )
-
-    active_matdb: bpy.props.EnumProperty(
-        items=_matdb_enum_items,
-        name="Material Database",
-        description="Active material database for import",
-    )
+    bl_idname = "STEPper"
 
     def draw(self, context):
         layout = self.layout
@@ -2372,7 +1122,7 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
         if sys.version_info[:2] != must_have_python:
             box = layout.box().column(align=True)
             box.alert = True
-            box.label(text="STEPper NEXT: Python version check failure", icon="ERROR")
+            box.label(text="STEPper: Python version check failure", icon="ERROR")
 
             row = box.row()
             row.label(text="Current version: " + str(".".join(str(i) for i in sys.version_info[:2])))
@@ -2383,51 +1133,38 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
             return
 
         row = layout.row()
-        row.prop(self, "build_materials")
+        row.prop(bpy.context.scene.stepper, "build_materials")
 
         row = layout.row()
-        row.prop(self, "hack_skip_zero_solids")
+        row.prop(bpy.context.scene.stepper, "hack_skip_zero_solids")
 
         row = layout.row()
-        row.prop(self, "simpler_parameters")
+        row.prop(bpy.context.scene.stepper, "simpler_parameters")
 
-        row = layout.row()
-        row.prop(self, "skip_empty_objects")
+        # row = layout.row()
+        # row.prop(bpy.context.scene.stepper, "hierarchy_types")
 
-        row = layout.row()
-        row.prop(self, "debug_timing")
-
-        row = layout.row()
-        row.prop(self, "active_matdb")
+        # row.operator(PMM_OT_EnsurePIP.bl_idname, text="Ensure PIP")
+        # row.operator(PMM_OT_UpgradePIP.bl_idname, text="Upgrade PIP")
+        # row.operator(PMM_OT_PIPList.bl_idname, text="List")
 
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportStepCADOperator.bl_idname, text="STEP (.step, .stp) [STEPper NEXT]")
+    self.layout.operator(ImportStepCADOperator.bl_idname, text="STEP (.step, .stp)")
 
 
 classes = (
-    STEP_AddonPreferences,
-    PG_MaterialMapping,
     PG_Stepper,
     ImportStepCADOperator,
     STEP_OT_ClearCache,
-    STEP_OT_ClearFileCache,
     STEP_OT_RebuildSelected,
     STEP_OT_ReloadSTEP,
     STEP_OT_FixASCII,
     STEP_OT_PrintDebug,
-    STEP_OT_MatDBCreate,
-    STEP_OT_MatDBDuplicate,
-    STEP_OT_MatDBRefresh,
-    STEP_OT_MatDBUpdate,
-    STEP_OT_MatDBSave,
-    STEP_OT_MatDBDelete,
-    STEP_OT_MatDBApply,
-    STEP_UL_MaterialMappings,
     STEP_PT_STEPper,
     STEP_PT_STEPper_Reload,
-    STEP_PT_MaterialDB,
     STEP_PT_STEPper_Debug,
+    STEP_AddonPreferences,
 )
 
 

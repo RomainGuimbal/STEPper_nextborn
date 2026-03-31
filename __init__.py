@@ -12,25 +12,14 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 # Copyright 2021 Tommi Hyppänen
-#
-# Modified 2026 by Peak-Design:
-#   - Ported to Blender 5.0 API (v2.0.0)
-#   - Fixed error in importing files with only single part with tree hierarchy option enabled
-#   - Added failed parts popup and import diagnostics
-#   - Updated to pythonocc-core 7.9.3 / Python 3.13 for Blender 5.1 (v2.1.0)
-#   - Fixed tessellation race conditions and corrupt STEP handling
-#   - Added ShapeFix healing for shapes with corrupted/missing geometry
-#   - Fixed crash: validate face triangulations before native C++ extraction
-#   - Renamed to STEPper NEXT, auto-apply scale, skip empty objects (v2.1.3)
-#   - Material database system, multi-user scale fix (v2.2.0)
 
 bl_info = {
-    "name": "STEPper NEXT",
-    "author": "ambi, Peak-Design",
+    "name": "STEPper",
+    "author": "ambi",
     "description": "STEP OpenCASCADE import",
-    "blender": (5, 1, 0),
-    "version": (2, 2, 1),
-    "location": "3D View > Tools panel > STEPper NEXT",
+    "blender": (4, 2, 0),
+    "version": (1, 1, 8),
+    "location": "3D View > Tools panel > Stepper",
     "category": "Import",
 }
 
