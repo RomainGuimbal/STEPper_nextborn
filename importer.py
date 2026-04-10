@@ -1555,7 +1555,7 @@ class ReadSTEP:
     def build_nurbs(self, shape):
         iter_shapes = [shape]
         nbs = []
-        for shp_i, shp in enumerate(iter_shapes):
+        for _, shp in enumerate(iter_shapes):
             ex = TopExp_Explorer(shp, TopAbs_FACE)
             if not ex.More():
                 with self._lock:

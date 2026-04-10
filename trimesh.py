@@ -34,7 +34,8 @@ class TriData:
 
 class TriMesh:
     """Triangle mesh. Array of triangles of which each item has three pointers
-    to locations inside array of verts. Each triangle data is defined through TriData class"""
+    to locations inside array of verts. Each triangle data is defined through TriData class
+    """
 
     def __init__(self, verts=None, tris=None, matrix=None):
 
@@ -174,7 +175,9 @@ class TriMesh:
         self.verts += verts
         tri = (vc_s, vc_s + 1, vc_s + 2)
         self.tris.append(TriData(tri, norms, uvs, colors, material, mat_name, batch_id))
-        self.tri_hash[make_tri_hash([tuple(verts[i]) for i in range(3)])] = len(self.tris) - 1
+        self.tri_hash[make_tri_hash([tuple(verts[i]) for i in range(3)])] = (
+            len(self.tris) - 1
+        )
         assert self.verts[self.tris[-1].indices[0]] == verts[0]
         assert self.verts[self.tris[-1].indices[2]] == verts[2]
 
@@ -208,7 +211,9 @@ class TriMesh:
             # later batches overwrite earlier ones
             if batch_priority and (otr.color is not None):
                 overwrite = False
-                if (self.tris[tri].color is not None) and (self.tris[tri].batch < otr.batch):
+                if (self.tris[tri].color is not None) and (
+                    self.tris[tri].batch < otr.batch
+                ):
                     overwrite = True
                 else:
                     overwrite = True
@@ -269,7 +274,10 @@ class TriMesh:
                 for e in bm.edges:
                     f = e.link_faces
                     # TODO: is batch indexing broken?
-                    if len(f) == 2 and self.tris[f[0].index].batch != self.tris[f[1].index].batch:
+                    if (
+                        len(f) == 2
+                        and self.tris[f[0].index].batch != self.tris[f[1].index].batch
+                    ):
                         e.seam = True
                     # if not e.is_manifold:
                     #     e.seam = True
@@ -339,7 +347,9 @@ class TriMesh:
 
                     # Check the dots on plane defined by the edge as normal
                     plane = np.array((e.verts[0].co - e.verts[1].co).normalized())
-                    if _prjtest(plane, e_norms[0], margin) and _prjtest(plane, e_norms[1], margin):
+                    if _prjtest(plane, e_norms[0], margin) and _prjtest(
+                        plane, e_norms[1], margin
+                    ):
                         e.smooth = False
                     else:
                         e.smooth = True
