@@ -64,8 +64,8 @@ from OCP.IFSelect import IFSelect_RetDone
 
 from OCP.TCollection import TCollection_ExtendedString
 from OCP.TColStd import TColStd_SequenceOfAsciiString
-from OCP.TDF import TDF_Label, TDF_LabelSequence
-from OCP.TDF import TDF_Tool
+from OCP.TDataStd import TDataStd_Name
+from OCP.TDF import TDF_Tool, TDF_Label, TDF_LabelSequence
 from OCP.TDocStd import TDocStd_Document
 from OCP.TopAbs import (
     TopAbs_COMPOUND,
@@ -362,19 +362,13 @@ def equalize_2d_points(pts):
 
 
 def get_label_name(label):
-    """Return the name of a TDF_Label as a string, fallback to EntryDumpToString or Tag if needed."""
-    try:
-        # Try to use GetLabelName if available
-        name = TCollection_ExtendedString()
-        if hasattr(TDF_Tool, "GetLabelName"):
-            tool = TDF_Tool()
-            tool.GetLabelName(label, name)
-            return name.ToExtString()
-        # Some OCP builds may have it as a static method
-        elif hasattr(label, "GetLabelName"):
-            return label.GetLabelName()
-    except Exception:
-        pass
+    """Return the name of a TDF_Label as a string, fallback to EntryDumpToString or Tag if needed.""" 
+    
+    # Try to use GetLabelName if available
+    name_attr = TDataStd_Name()
+    if label.FindAttribute(TDataStd_Name.GetID_s(), name_attr):
+        return name_attr.Get().ToExtString()
+
     # Fallback: use EntryDumpToString or Tag
     if hasattr(label, "EntryDumpToString"):
         return label.EntryDumpToString()
@@ -810,7 +804,9 @@ class ReadSTEP:
 
             tree = ShapeTree()
             for i in range(labels.Length()):
-                print("DataExchange: Reading shape ({}/{})".format(i + 1, labels.Length()))
+                print(
+                    f"DataExchange: Reading shape ({i + 1}/{labels.Length()})"
+                )
 
                 root_item = labels.Value(i + 1)
                 node = tree.add(tree.get_root_id(), root_item)
