@@ -46,10 +46,10 @@ from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
 from OCP.BRepLProp import BRepLProp_SLProps
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.BRepTools import breptools
-from OCP.ShapeFix import ShapeFix_Shape
-from OCP.GeomConvert import geomconvert_SurfaceToBSplineSurface
+from OCP.BRepTools import BRepTools
+from OCP.GeomConvert import GeomConvert_SurfaceToBSplineSurface
 from OCP.gp import gp, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, gp_XYZ
+from OCP.ShapeFix import ShapeFix_Shape
 
 # from OCP.Standard import Standard_Real
 from OCP.IFSelect import IFSelect_RetDone
@@ -279,7 +279,7 @@ def nurbs_parse(current_face):
     nurbs_converter.Perform(current_face)
     result_shape = nurbs_converter.Shape()
     brep_face = BRep_Tool.Surface(topods.Face(result_shape))
-    occ_face = geomconvert_SurfaceToBSplineSurface(brep_face)
+    occ_face = GeomConvert_SurfaceToBSplineSurface(brep_face)
 
     # extract the Control Points of each face
     n_poles_u = occ_face.NbUPoles()
@@ -802,7 +802,7 @@ class ReadSTEP:
             return
 
         def _tessellate_group(shape):
-            brt = breptools()
+            brt = BrepTools()
             iter_shapes = [shape] + self.sub_shapes.get(shape, [])
             for shp in iter_shapes:
                 brt.Clean(shp)
@@ -1174,7 +1174,7 @@ class ReadSTEP:
         When skip_faulty is True, skip all healing/recovery retries — just
         tessellate once and return whatever we get.
         """
-        breptools().Clean(shp)
+        BrepTools().Clean(shp)
         brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
         brepmesh.Perform()
 
@@ -1195,14 +1195,14 @@ class ReadSTEP:
         # Retry 1: heal shape then tessellate
         healed = self._heal_shape(shp)
         if healed is not shp:
-            breptools().Clean(healed)
+            BrepTools().Clean(healed)
             brepmesh = BRepMesh_IncrementalMesh(healed, lin_def, False, ang_def, False)
             brepmesh.Perform()
             print(f"\n  [healed] {part_name}", end="", flush=True)
             return healed
 
         # Retry 2: relax tolerances significantly
-        breptools().Clean(shp)
+        BrepTools().Clean(shp)
         brepmesh = BRepMesh_IncrementalMesh(shp, lin_def * 4.0, False, ang_def * 2.0, False)
         brepmesh.Perform()
         print(f"\n  [relaxed-tess] {part_name}", end="", flush=True)
