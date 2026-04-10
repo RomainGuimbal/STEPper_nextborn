@@ -47,7 +47,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
 from OCP.BRepLProp import BRepLProp_SLProps
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepTools import BRepTools
-from OCP.GeomConvert import GeomConvert_SurfaceToBSplineSurface
+from OCP.GeomConvert import GeomConvert
 from OCP.gp import gp, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, gp_XYZ
 from OCP.ShapeFix import ShapeFix_Shape
 
@@ -280,7 +280,7 @@ def nurbs_parse(current_face):
     nurbs_converter.Perform(current_face)
     result_shape = nurbs_converter.Shape()
     brep_face = BRep_Tool.Surface(TopoDS.Face(result_shape))
-    occ_face = GeomConvert_SurfaceToBSplineSurface(brep_face)
+    occ_face = GeomConvert.SurfaceToBSplineSurface(brep_face)
 
     # extract the Control Points of each face
     n_poles_u = occ_face.NbUPoles()
