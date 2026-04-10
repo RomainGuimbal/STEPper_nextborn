@@ -279,7 +279,7 @@ def nurbs_parse(current_face):
     nurbs_converter = BRepBuilderAPI_NurbsConvert(current_face)
     nurbs_converter.Perform(current_face)
     result_shape = nurbs_converter.Shape()
-    brep_face = BRep_Tool.Surface(topods.Face(result_shape))
+    brep_face = BRep_Tool.Surface(TopoDS.Face(result_shape))
     occ_face = GeomConvert_SurfaceToBSplineSurface(brep_face)
 
     # extract the Control Points of each face
@@ -749,7 +749,7 @@ class ReadSTEP:
 
             master_leaf = tree.nodes[leaf_id]
             # l_comps = TDF_LabelSequence()
-            # self.shape_tool.GetComponents(lab, l_comps)
+            # self.shape_tool.GetComponents_s(lab, l_comps)
             if self.shape_tool.IsAssembly_s(lab):
                 # Get transform for pure transform (empty)
                 # Empty has eye transform, inherit global from parent
@@ -759,7 +759,7 @@ class ReadSTEP:
 
                 # Read contained shapes
                 l_c = TDF_LabelSequence()
-                self.shape_tool.GetComponents(lab, l_c)
+                self.shape_tool.GetComponents_s(lab, l_c)
                 for i in range(l_c.Length()):
                     label = l_c.Value(i + 1)
                     if self.shape_tool.IsReference(label):
@@ -1105,7 +1105,7 @@ class ReadSTEP:
                 # (one call instead of thousands of per-face calls)
                 repr_ent = recovery_model.Value(repr_num)
                 builder = BRep_Builder()
-                compound = TopoDS_Compound()
+                compound = TopoDS.Compound()
                 builder.MakeCompound(compound)
                 ok = 0
 
@@ -1216,7 +1216,7 @@ class ReadSTEP:
         ex = TopExp_Explorer(shp, TopAbs_FACE)
         has_tris = False
         while ex.More():
-            face = topods.Face(ex.Current())
+            face = TopoDS.Face(ex.Current())
             if BRep_Tool().Triangulation(face, test_loc) is not None:
                 has_tris = True
                 break
@@ -1324,7 +1324,7 @@ class ReadSTEP:
                 ex = TopExp_Explorer(shp, TopAbs_FACE)
             else:
                 test_loc = TopLoc_Location()
-                test_face = topods.Face(ex.Current())
+                test_face = TopoDS.Face(ex.Current())
                 if BRep_Tool().Triangulation(test_face, test_loc) is None:
                     shp = self._tessellate_shape(
                         shp, lin_def, ang_def,
@@ -1334,7 +1334,7 @@ class ReadSTEP:
             trf = shp.Location().Transformation()
 
             while ex.More():
-                face = topods.Face(ex.Current())
+                face = TopoDS.Face(ex.Current())
                 idx = len(collected_faces)
                 collected_faces.append((face, trf, col_rgb, col_name, batch))
                 # Dedup: record last index for each face object
@@ -1563,7 +1563,7 @@ class ReadSTEP:
                 return []
 
             while ex.More():
-                pt = nurbs_parse(topods.Face(ex.Current()))
+                pt = nurbs_parse(TopoDS.Face(ex.Current()))
                 nbs.append(pt)
                 ex.Next()
 
