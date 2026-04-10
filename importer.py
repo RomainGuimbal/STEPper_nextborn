@@ -41,30 +41,32 @@ from . import trimesh
 from . import nurbs
 
 importlib.reload(trimesh)
-from OCC.Core.BRep import BRep_Builder, BRep_Tool
-from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
-from OCC.Core.BRepLProp import BRepLProp_SLProps
-from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-from OCC.Core.BRepTools import breptools
-from OCC.Core.ShapeFix import ShapeFix_Shape
-from OCC.Core.GeomConvert import geomconvert_SurfaceToBSplineSurface
-from OCC.Core.gp import gp, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, gp_XYZ
+from OCP.BRep import BRep_Builder, BRep_Tool
+from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+from OCP.BRepLProp import BRepLProp_SLProps
+from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.BRepTools import breptools
+from OCP.ShapeFix import ShapeFix_Shape
+from OCP.GeomConvert import geomconvert_SurfaceToBSplineSurface
+from OCP.gp import gp, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, gp_XYZ
 
-# from OCC.Core.Standard import Standard_Real
-from OCC.Core.IFSelect import IFSelect_RetDone
+# from OCP.Standard import Standard_Real
+from OCP.IFSelect import IFSelect_RetDone
 
-from OCC.Core.Interface import Interface_Static
-from OCC.Core.Poly import poly
-from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
-from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
-from OCC.Core.STEPControl import STEPControl_Reader
+from OCP.Interface import Interface_Static
+from OCP.Poly import poly
+from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+from OCP.STEPCAFControl import STEPCAFControl_Reader
+from OCP.STEPControl import STEPControl_Reader
+# from OCP.Standard import Standard_Real
+from OCP.IFSelect import IFSelect_RetDone
 
-# from OCC.Core.TCollection import TCollection_ExtendedString
-from OCC.Core.TColStd import TColStd_SequenceOfAsciiString
-from OCC.Core.TDF import TDF_Label, TDF_LabelSequence
-from OCC.Core.TDocStd import TDocStd_Document
-from OCC.Core.TopAbs import (
+# from OCP.TCollection import TCollection_ExtendedString
+from OCP.TColStd import TColStd_SequenceOfAsciiString
+from OCP.TDF import TDF_Label, TDF_LabelSequence
+from OCP.TDocStd import TDocStd_Document
+from OCP.TopAbs import (
     TopAbs_COMPOUND,
     TopAbs_EDGE,
     TopAbs_FACE,
@@ -77,21 +79,21 @@ from OCC.Core.TopAbs import (
     TopAbs_WIRE,
     topabs_ShapeTypeToString,
 )
-from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopLoc import TopLoc_Location
+from OCP.TopExp import TopExp_Explorer
+from OCP.TopLoc import TopLoc_Location
 
-# from OCC.Core.TopExp import topexp_MapShapes
-# from OCC.Core.TopTools import TopTools_MapOfShape, TopTools_IndexedMapOfShape
-from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Compound, topods
-from OCC.Core.XCAFApp import XCAFApp_Application_GetApplication
-from OCC.Core.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_ColorCurv
+# from OCP.TopExp import topexp_MapShapes
+# from OCP.TopTools import TopTools_MapOfShape, TopTools_IndexedMapOfShape
+from OCP.TopoDS import TopoDS_Shape, TopoDS_Compound, topods
+from OCP.XCAFApp import XCAFApp_Application_GetApplication
+from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_ColorCurv
 # XSControl_WorkSession no longer needed — using XCAF reader's ChangeReader()
-from OCC.Core.StepBasic import StepBasic_ProductDefinition
-from OCC.Core.StepRepr import (
+from OCP.StepBasic import StepBasic_ProductDefinition
+from OCP.StepRepr import (
     StepRepr_ProductDefinitionShape,
     StepRepr_ShapeRepresentationRelationship,
 )
-from OCC.Core.StepShape import (
+from OCP.StepShape import (
     StepShape_AdvancedBrepShapeRepresentation,
     StepShape_ManifoldSolidBrep,
     StepShape_ManifoldSurfaceShapeRepresentation,
@@ -99,9 +101,6 @@ from OCC.Core.StepShape import (
     StepShape_ShellBasedSurfaceModel,
 )
 
-import OCC
-
-print("--> STEPper NEXT OpenCASCADE version:", OCC.VERSION)
 
 # Native C++ acceleration for mesh extraction (optional)
 try:
@@ -622,7 +621,7 @@ class ReadSTEP:
 
             if not transfer_ok:
                 # Retry with mode 0: discard surface curves from file
-                from OCC.Core.Interface import Interface_Static
+                from OCP.Interface import Interface_Static
                 Interface_Static.SetIVal("read.surfacecurve.mode", 0)
                 doc = TDocStd_Document("STEP")
                 step_reader = STEPCAFControl_Reader()
