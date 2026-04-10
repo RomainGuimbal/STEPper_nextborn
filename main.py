@@ -28,11 +28,11 @@ import sys
 from collections import Counter, OrderedDict
 
 import numpy as np
-import bmesh  # type: ignore
-import bpy  # type: ignore
-from bpy.props import StringProperty  # type: ignore
-from bpy_extras.io_utils import ImportHelper  # type: ignore
-from mathutils import Matrix, Vector  # type: ignore
+import bmesh
+import bpy
+from bpy.props import StringProperty
+from bpy_extras.io_utils import ImportHelper
+from mathutils import Matrix, Vector
 
 from .trimesh import TriMesh
 from .importer import NativeMeshData

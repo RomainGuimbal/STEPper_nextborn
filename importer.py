@@ -84,8 +84,8 @@ from OCP.TopLoc import TopLoc_Location
 
 # from OCP.TopExp import topexp_MapShapes
 # from OCP.TopTools import TopTools_MapOfShape, TopTools_IndexedMapOfShape
-from OCP.TopoDS import TopoDS_Shape, TopoDS_Compound, topods
-from OCP.XCAFApp import XCAFApp_Application_GetApplication
+from OCP.TopoDS import TopoDS_Shape, TopoDS
+from OCP.XCAFApp import XCAFApp_Application
 from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_ColorCurv
 # XSControl_WorkSession no longer needed — using XCAF reader's ChangeReader()
 from OCP.StepBasic import StepBasic_ProductDefinition
@@ -653,7 +653,7 @@ class ReadSTEP:
 
         # Create the application, empty document and shape_tool
         doc = TDocStd_Document("STEP")
-        app = XCAFApp_Application_GetApplication()
+        app = XCAFApp_Application.GetApplication()
         app.NewDocument("MDTV-XCAF", doc)
 
         # Read file and return populated doc
