@@ -364,7 +364,7 @@ def equalize_2d_points(pts):
 def get_label_name(label):
     """Return the name of a TDF_Label as a string, fallback to EntryDumpToString or Tag if needed.""" 
     
-    # Try to use GetLabelName if available
+    # Try to use name label if available
     name_attr = TDataStd_Name()
     if label.FindAttribute(TDataStd_Name.GetID_s(), name_attr):
         return name_attr.Get().ToExtString()
@@ -1288,8 +1288,9 @@ class ReadSTEP:
         face_dedup = OrderedDict()
         batch = 0
 
-        for shp_i, shp in enumerate(iter_shapes):
-            col = self.face_colors.get(shp)
+        # Iterate over the main shape and its sub shapes
+        for _, shp in enumerate(iter_shapes):
+            col = self.face_colors[shp]
             if col is not None:
                 col_rgb = b_RGB(col)
                 col_name = b_colorname(col)
