@@ -1,0 +1,40 @@
+schema_version = "1.0.0"
+
+id = "stepper_next"
+version = "2.3.0"
+name = "STEPper NEXT"
+tagline = "CAD importer"
+maintainer = "Romain Guimbal"
+type = "add-on"
+
+website = "https://github.com/Peak-Design/STEPper_NEXT"
+
+tags = ["Import-Export"]
+
+blender_version_min = "5.1.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+copyright = ["2021 Tommi Hyppänen, 2025 Romain Guimbal, 2026 Peak-Design,"]
+
+platforms = ["windows-x64", "macos-x64", "macos-arm64", "linux-x64"]
+wheels = [
+  "./wheels/cadquery_ocp_novtk-7.9.3.1-cp313-cp313-win_amd64.whl",
+  "./wheels/cadquery_ocp_novtk-7.9.3.1-cp313-cp313-macosx_11_0_x86_64.whl",
+  "./wheels/cadquery_ocp_novtk-7.9.3.1-cp313-cp313-macosx_11_0_arm64.whl",
+  "./wheels/cadquery_ocp_novtk-7.9.3.1-cp313-cp313-manylinux_2_31_x86_64.whl",
+]
+
+[permissions]
+files = "Import STEP files"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/.vscode/",
+  "/.github/",
+  ".gitignore",
+  ".gitattributes",
+  "README.md",
+]

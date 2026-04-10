@@ -13,6 +13,8 @@
 #
 # Copyright 2021 Tommi Hyppänen
 #
+# Modified 2025 Romain Guimbal
+#
 # Modified 2026 by Peak-Design:
 #   - Ported to Blender 5.0 API (v2.0.0)
 #   - Fixed error in importing files with only single part with tree hierarchy option enabled
@@ -26,10 +28,10 @@
 
 bl_info = {
     "name": "STEPper NEXT",
-    "author": "ambi, Peak-Design",
+    "author": "ambi, Peak-Design, Romain Guimbal",
     "description": "STEP OpenCASCADE import",
     "blender": (5, 1, 0),
-    "version": (2, 2, 1),
+    "version": (2, 3, 0),
     "location": "3D View > Tools panel > STEPper NEXT",
     "category": "Import",
 }

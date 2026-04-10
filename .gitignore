@@ -1,6 +1,4 @@
-/__pycache__
-/OCC/Core/__pycache__
-/OCC/__pycache__
-/OCC/Wrapper/__pycache__
-/OCC/Wrapper/__pycache__
 /MaterialDB
+__pycache__/
+
+*.pyc
