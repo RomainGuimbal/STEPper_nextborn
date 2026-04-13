@@ -4,7 +4,7 @@ id = "stepper_next"
 version = "2.3.0"
 name = "STEPper NEXT"
 tagline = "CAD importer"
-maintainer = "Romain Guimbal"
+maintainer = "Romain Guimbal, Peak-Design"
 type = "add-on"
 
 website = "https://github.com/Peak-Design/STEPper_NEXT"
@@ -15,7 +15,7 @@ blender_version_min = "5.1.0"
 
 license = ["SPDX:GPL-3.0-or-later"]
 
-copyright = ["2021 Tommi Hyppänen, 2025 Romain Guimbal, 2026 Peak-Design,"]
+copyright = ["2021 Tommi Hyppänen, 2025 Romain Guimbal, 2026 Peak-Design"]
 
 platforms = ["windows-x64", "macos-x64", "macos-arm64", "linux-x64"]
 wheels = [

@@ -13,6 +13,8 @@
 #
 # Copyright 2021 Tommi Hyppänen
 #
+# Modified 2025 Romain Guimbal
+#
 # Modified 2026 by Peak-Design:
 #   - Updated to pythonocc-core 7.9.3 (OpenCASCADE 7.9.3)
 #   - Fixed tessellation race conditions and re-tessellation fallback

@@ -14,6 +14,8 @@
 # Created Date: Thursday, April 15th 2021, 4:38:48 pm
 # Copyright: Tommi Hyppänen
 #
+# Modified 2025 Romain Guimbal
+#
 # Modified 2026 by Peak-Design:
 #   - Ported to Blender 5.0 API
 #   - Added failed parts tracking and popup warnings
@@ -24,7 +26,6 @@ import json
 import ntpath
 import os
 import time
-import sys
 from collections import Counter, OrderedDict
 
 import numpy as np
@@ -40,7 +41,6 @@ from .importer import NativeMeshData
 # LRU file cache with max entry limit
 MAX_FILE_CACHE = 10
 global_file_cache = OrderedDict()
-must_have_python = (3, 13)
 
 # Color quantization precision for material merging (~1.5% tolerance)
 _COLOR_MERGE_PRECISION = 64
@@ -2481,23 +2481,6 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         layout = self.layout
-
-        must_have_str = ".".join(str(i) for i in must_have_python)
-        if sys.version_info[:2] != must_have_python:
-            box = layout.box().column(align=True)
-            box.alert = True
-            box.label(text="STEPper NEXT: Python version check failure", icon="ERROR")
-
-            row = box.row()
-            row.label(
-                text="Current version: "
-                + str(".".join(str(i) for i in sys.version_info[:2]))
-            )
-            row = box.row()
-            row.label(text="Please install Blender with Python " + must_have_str)
-            row = box.row()
-            row.label(text="https://www.blender.org/")
-            return
 
         row = layout.row()
         row.prop(self, "build_materials")
