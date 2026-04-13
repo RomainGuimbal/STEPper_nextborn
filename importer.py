@@ -48,17 +48,18 @@ from OCP.BRepLProp import BRepLProp_SLProps
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepTools import BRepTools
 from OCP.GeomConvert import GeomConvert
-from OCP.gp import gp, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, gp_XYZ
+from OCP.gp import gp  # , gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, gp_XYZ
 from OCP.ShapeFix import ShapeFix_Shape
 
 # from OCP.Standard import Standard_Real
 from OCP.IFSelect import IFSelect_RetDone
 
-from OCP.Interface import Interface_Static
-from OCP.Poly import poly
+# from OCP.Interface import Interface_Static
+# from OCP.Poly import Poly
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.STEPCAFControl import STEPCAFControl_Reader
-from OCP.STEPControl import STEPControl_Reader
+
+# from OCP.STEPControl import STEPControl_Reader
 # from OCP.Standard import Standard_Real
 from OCP.IFSelect import IFSelect_RetDone
 
@@ -72,13 +73,11 @@ from OCP.TopAbs import (
     TopAbs_EDGE,
     TopAbs_FACE,
     TopAbs_FORWARD,
-    TopAbs_INTERNAL,
     TopAbs_REVERSED,
     TopAbs_SHELL,
     TopAbs_SOLID,
     TopAbs_VERTEX,
     TopAbs_WIRE,
-    topabs_ShapeTypeToString,
 )
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
@@ -87,7 +86,13 @@ from OCP.TopLoc import TopLoc_Location
 # from OCP.TopTools import TopTools_MapOfShape, TopTools_IndexedMapOfShape
 from OCP.TopoDS import TopoDS_Shape, TopoDS
 from OCP.XCAFApp import XCAFApp_Application
-from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_ColorCurv
+from OCP.XCAFDoc import (
+    XCAFDoc_DocumentTool,
+    XCAFDoc_ColorGen,
+    XCAFDoc_ColorSurf,
+    XCAFDoc_ColorCurv,
+)
+
 # XSControl_WorkSession no longer needed — using XCAF reader's ChangeReader()
 from OCP.StepBasic import StepBasic_ProductDefinition
 from OCP.StepRepr import (
@@ -106,6 +111,7 @@ from OCP.StepShape import (
 # Native C++ acceleration for mesh extraction (optional)
 try:
     from . import stepper_native
+
     _HAS_NATIVE = True
     print("--> STEPper NEXT native acceleration: ENABLED")
 except ImportError:
@@ -155,21 +161,31 @@ class NativeMeshData:
     Holds flat numpy arrays instead of TriData/TriMesh Python objects.
     Compatible with the from_pydata + foreach_set Blender creation path.
     """
-    __slots__ = ('verts', 'faces', 'norms', 'uvs',
-                 'loop_norms',
-                 'tri_colors', 'tri_batches', 'tri_mat_names', 'matrix')
 
-    def __init__(self, verts, faces, norms, uvs,
-                 tri_colors, tri_batches, tri_mat_names, matrix):
-        self.verts = verts              # (V, 3) float32
-        self.faces = faces              # (T, 3) int32
-        self.norms = norms              # (V, 3) float32 per-vertex
-        self.uvs = uvs                  # (V, 2) float32 per-vertex
-        self.loop_norms = None          # (T*3, 3) float32 per-corner, set before fuse_verts
-        self.tri_colors = tri_colors    # (T, 3) float32, -1 = no color
+    __slots__ = (
+        "verts",
+        "faces",
+        "norms",
+        "uvs",
+        "loop_norms",
+        "tri_colors",
+        "tri_batches",
+        "tri_mat_names",
+        "matrix",
+    )
+
+    def __init__(
+        self, verts, faces, norms, uvs, tri_colors, tri_batches, tri_mat_names, matrix
+    ):
+        self.verts = verts  # (V, 3) float32
+        self.faces = faces  # (T, 3) int32
+        self.norms = norms  # (V, 3) float32 per-vertex
+        self.uvs = uvs  # (V, 2) float32 per-vertex
+        self.loop_norms = None  # (T*3, 3) float32 per-corner, set before fuse_verts
+        self.tri_colors = tri_colors  # (T, 3) float32, -1 = no color
         self.tri_batches = tri_batches  # (T,) int32
         self.tri_mat_names = tri_mat_names  # list[str|None] len=T
-        self.matrix = matrix            # (4, 4) float32
+        self.matrix = matrix  # (4, 4) float32
 
     def fuse_verts(self):
         """Merge duplicate vertices using numpy.
@@ -187,7 +203,8 @@ class NativeMeshData:
         # Round to avoid floating-point near-misses
         verts_rounded = np.round(self.verts, decimals=6)
         _, first_idx, inverse = np.unique(
-            verts_rounded, axis=0, return_index=True, return_inverse=True)
+            verts_rounded, axis=0, return_index=True, return_inverse=True
+        )
         if len(_) == len(self.verts):
             return  # no duplicates
         # Remap face indices
@@ -209,8 +226,9 @@ class NativeMeshData:
         self.faces = self.faces[keep]
         self.tri_colors = self.tri_colors[keep]
         self.tri_batches = self.tri_batches[keep]
-        self.tri_mat_names = [self.tri_mat_names[i]
-                              for i in range(len(keep)) if keep[i]]
+        self.tri_mat_names = [
+            self.tri_mat_names[i] for i in range(len(keep)) if keep[i]
+        ]
         if self.loop_norms is not None:
             # keep mask is per-tri; loop_norms is per-corner (3 per tri)
             keep3 = np.repeat(keep, 3)
@@ -229,7 +247,9 @@ class NativeMeshData:
         self.tri_mat_names = [self.tri_mat_names[i] for i in unique_idx]
         if self.loop_norms is not None:
             # unique_idx is per-tri; expand to per-corner
-            loop_idx = np.repeat(unique_idx * 3, 3) + np.tile([0, 1, 2], len(unique_idx))
+            loop_idx = np.repeat(unique_idx * 3, 3) + np.tile(
+                [0, 1, 2], len(unique_idx)
+            )
             self.loop_norms = self.loop_norms[loop_idx]
 
     def fill_empty_color(self):
@@ -362,8 +382,8 @@ def equalize_2d_points(pts):
 
 
 def get_label_name(label):
-    """Return the name of a TDF_Label as a string, fallback to EntryDumpToString or Tag if needed.""" 
-    
+    """Return the name of a TDF_Label as a string, fallback to EntryDumpToString or Tag if needed."""
+
     # Try to use name label if available
     name_attr = TDataStd_Name()
     if label.FindAttribute(TDataStd_Name.GetID_s(), name_attr):
@@ -471,9 +491,9 @@ class ReadSTEP:
 
         shape = self.shape_tool.GetShape_s(label)
 
-        c_gen = self.color_tool.GetColor(shape, int(XCAFDoc_ColorGen), c)
-        c_surf = self.color_tool.GetColor(shape, int(XCAFDoc_ColorSurf), c)
-        c_curv = self.color_tool.GetColor(shape, int(XCAFDoc_ColorCurv), c)
+        c_gen = self.color_tool.GetColor(shape, XCAFDoc_ColorGen, c)
+        c_surf = self.color_tool.GetColor(shape, XCAFDoc_ColorSurf, c)
+        c_curv = self.color_tool.GetColor(shape, XCAFDoc_ColorCurv, c)
         if c_gen or c_surf or c_curv:
             colorset = True
             colortype = c_gen * 1 + c_surf * 2 + c_curv * 3
@@ -538,7 +558,9 @@ class ReadSTEP:
 
         # res += f", C:{shp.NbChildren()}"
 
-        res += ", C:{} So:{} Sh:{} F:{} Wi:{} E:{} V:{}".format(*self.explore_shape(shp))
+        res += ", C:{} So:{} Sh:{} F:{} Wi:{} E:{} V:{}".format(
+            *self.explore_shape(shp)
+        )
 
         return " " + res + " "
 
@@ -634,13 +656,16 @@ class ReadSTEP:
                 if transfer_ok:
                     print("DataExchange: Transfer done")
                 else:
-                    print("DataExchange: Transfer returned failure, retrying in safe mode...")
+                    print(
+                        "DataExchange: Transfer returned failure, retrying in safe mode..."
+                    )
             except Exception as e:
                 print(f"DataExchange: Transfer failed ({e}), retrying in safe mode...")
 
             if not transfer_ok:
                 # Retry with mode 0: discard surface curves from file
                 from OCP.Interface import Interface_Static
+
                 Interface_Static.SetIVal("read.surfacecurve.mode", 0)
                 doc = TDocStd_Document("STEP")
                 step_reader = STEPCAFControl_Reader()
@@ -713,10 +738,18 @@ class ReadSTEP:
         self.face_color_priority = {}
         self.tag_info = {}
         self.skipped_shapes = set([])
-        self.import_problems = {"Triangulation": 0, "Undefined normals": 0, "Empty shape": 0}
+        self.import_problems = {
+            "Triangulation": 0,
+            "Undefined normals": 0,
+            "Empty shape": 0,
+        }
         self.failed_parts = []  # List of names for parts that produced no geometry
-        self.recovered_parts = []  # List of names for parts recovered via per-face transfer
-        self._lock = threading.Lock()  # Protects import_problems, skipped_shapes, recovered_parts
+        self.recovered_parts = (
+            []
+        )  # List of names for parts recovered via per-face transfer
+        self._lock = (
+            threading.Lock()
+        )  # Protects import_problems, skipped_shapes, recovered_parts
         self._pre_tessellated = False
         self._recovery_compounds = None  # Lazy-built recovery compound
 
@@ -764,7 +797,9 @@ class ReadSTEP:
                         node = tree.add(master_leaf.index, label_reference)
                         new_leaf = tree.nodes[node.index]
                         new_leaf.local_transform = label_transform
-                        new_leaf.global_transform = master_leaf.global_transform @ label_transform
+                        new_leaf.global_transform = (
+                            master_leaf.global_transform @ label_transform
+                        )
 
                         _get_sub_shapes(label_reference, level + 1, tree, node.index)
                     else:
@@ -804,9 +839,7 @@ class ReadSTEP:
 
             tree = ShapeTree()
             for i in range(labels.Length()):
-                print(
-                    f"DataExchange: Reading shape ({i + 1}/{labels.Length()})"
-                )
+                print(f"DataExchange: Reading shape ({i + 1}/{labels.Length()})")
 
                 root_item = labels.Value(i + 1)
                 node = tree.add(tree.get_root_id(), root_item)
@@ -831,13 +864,15 @@ class ReadSTEP:
             return
 
         def _tessellate_group(shape):
-            brt = BrepTools()
+            brt = BRepTools
             iter_shapes = [shape] + self.sub_shapes.get(shape, [])
             for shp in iter_shapes:
-                brt.Clean(shp)
+                brt.Clean_s(shp)
                 ex = TopExp_Explorer(shp, TopAbs_FACE)
                 if ex.More():
-                    brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
+                    brepmesh = BRepMesh_IncrementalMesh(
+                        shp, lin_def, False, ang_def, False
+                    )
                     brepmesh.Perform()
 
         n_workers = min(len(shapes), os.cpu_count() or 4)
@@ -865,8 +900,8 @@ class ReadSTEP:
                 self.import_problems["Triangulation"] += 1
             return None
 
-        reversed_face = (face.Orientation() == TopAbs_REVERSED)
-        not_forward = (face.Orientation() != TopAbs_FORWARD)
+        reversed_face = face.Orientation() == TopAbs_REVERSED
+        not_forward = face.Orientation() != TopAbs_FORWARD
         itform = tform.Inverted()
 
         d_nbnodes = facing.NbNodes()
@@ -887,10 +922,14 @@ class ReadSTEP:
                 if t == 1:
                     Umin, Umax, Vmin, Vmax = u, u, v, v
                 else:
-                    if u < Umin: Umin = u
-                    if u > Umax: Umax = u
-                    if v < Vmin: Vmin = v
-                    if v > Vmax: Vmax = v
+                    if u < Umin:
+                        Umin = u
+                    if u > Umax:
+                        Umax = u
+                    if v < Vmin:
+                        Vmin = v
+                    if v > Vmax:
+                        Vmax = v
         Ucenter = (Umin + Umax) * 0.5
         Vcenter = (Vmin + Vmax) * 0.5
 
@@ -912,8 +951,9 @@ class ReadSTEP:
                 uvs[t - 1] = (0.0, 0.0)
 
             # Shrink UV 0.1% toward center to avoid undefined normals at edges
-            prop.SetParameters((u - Ucenter) * 0.999 + Ucenter,
-                               (v - Vcenter) * 0.999 + Vcenter)
+            prop.SetParameters(
+                (u - Ucenter) * 0.999 + Ucenter, (v - Vcenter) * 0.999 + Vcenter
+            )
             if prop.IsNormalDefined():
                 normal = prop.Normal().Transformed(itform)
                 nn = np.array(b_XYZ(normal), dtype=np.float32)
@@ -939,9 +979,17 @@ class ReadSTEP:
 
         tri_data = []
         for t in tris:
-            tri_data.append(trimesh.TriData(
-                t, [norms[i] for i in t], [uvs[i] for i in t],
-                None, None, None, None))
+            tri_data.append(
+                trimesh.TriData(
+                    t,
+                    [norms[i] for i in t],
+                    [uvs[i] for i in t],
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            )
 
         return trimesh.TriMesh(verts=verts, tris=tri_data)
 
@@ -978,7 +1026,10 @@ class ReadSTEP:
             af_hash_to_idx = {}
             for i in range(1, ne + 1):
                 ent = xcaf_model.Value(i)
-                if ent is not None and ent.DynamicType().Name() == 'StepShape_AdvancedFace':
+                if (
+                    ent is not None
+                    and ent.DynamicType().Name() == "StepShape_AdvancedFace"
+                ):
                     af_hash_to_idx[hash(ent)] = i
 
             if not af_hash_to_idx:
@@ -998,36 +1049,44 @@ class ReadSTEP:
             generic_to_specific = {}
             for i in range(1, ne + 1):
                 ent = xcaf_model.Value(i)
-                if ent is None or ent.DynamicType().Name() != 'StepRepr_ShapeRepresentationRelationship':
+                if (
+                    ent is None
+                    or ent.DynamicType().Name()
+                    != "StepRepr_ShapeRepresentationRelationship"
+                ):
                     continue
                 srr = StepRepr_ShapeRepresentationRelationship.DownCast(ent)
                 rep1, rep2 = srr.Rep1(), srr.Rep2()
                 t1 = rep1.DynamicType().Name() if rep1 else ""
                 t2 = rep2.DynamicType().Name() if rep2 else ""
-                if 'ManifoldSurface' in t2 or 'AdvancedBrep' in t2:
+                if "ManifoldSurface" in t2 or "AdvancedBrep" in t2:
                     generic_to_specific[xcaf_model.Number(rep1)] = rep2
-                elif 'ManifoldSurface' in t1 or 'AdvancedBrep' in t1:
+                elif "ManifoldSurface" in t1 or "AdvancedBrep" in t1:
                     generic_to_specific[xcaf_model.Number(rep2)] = rep1
 
             # SDR → PDS → PD, giving us PD entity number → repr entity
             pd_num_to_repr_ent = {}
             for i in range(1, ne + 1):
                 ent = xcaf_model.Value(i)
-                if ent is None or ent.DynamicType().Name() != 'StepShape_ShapeDefinitionRepresentation':
+                if (
+                    ent is None
+                    or ent.DynamicType().Name()
+                    != "StepShape_ShapeDefinitionRepresentation"
+                ):
                     continue
                 sdr = StepShape_ShapeDefinitionRepresentation.DownCast(ent)
                 used_repr = sdr.UsedRepresentation()
                 if used_repr is None:
                     continue
                 actual_repr = generic_to_specific.get(
-                    xcaf_model.Number(used_repr), used_repr)
+                    xcaf_model.Number(used_repr), used_repr
+                )
                 defn = sdr.Definition()
                 if defn is None:
                     continue
                 try:
                     pds = StepRepr_ProductDefinitionShape.DownCast(defn.Value())
-                    pd = StepBasic_ProductDefinition.DownCast(
-                        pds.Definition().Value())
+                    pd = StepBasic_ProductDefinition.DownCast(pds.Definition().Value())
                     pd_num_to_repr_ent[xcaf_model.Number(pd)] = actual_repr
                 except Exception:
                     pass
@@ -1042,11 +1101,14 @@ class ReadSTEP:
                 tname = ent.DynamicType().Name()
                 faces = set()
 
-                if tname == 'StepShape_ManifoldSurfaceShapeRepresentation':
+                if tname == "StepShape_ManifoldSurfaceShapeRepresentation":
                     mssr = StepShape_ManifoldSurfaceShapeRepresentation.DownCast(ent)
                     for j in range(1, mssr.NbItems() + 1):
                         item = mssr.ItemsValue(j)
-                        if item.DynamicType().Name() != 'StepShape_ShellBasedSurfaceModel':
+                        if (
+                            item.DynamicType().Name()
+                            != "StepShape_ShellBasedSurfaceModel"
+                        ):
                             continue
                         sbsm = StepShape_ShellBasedSurfaceModel.DownCast(item)
                         for k in range(1, sbsm.NbSbsmBoundary() + 1):
@@ -1064,11 +1126,11 @@ class ReadSTEP:
                             if shell is not None:
                                 _collect_faces_from_shell(shell, faces)
 
-                elif tname == 'StepShape_AdvancedBrepShapeRepresentation':
+                elif tname == "StepShape_AdvancedBrepShapeRepresentation":
                     absr = StepShape_AdvancedBrepShapeRepresentation.DownCast(ent)
                     for j in range(1, absr.NbItems() + 1):
                         item = absr.ItemsValue(j)
-                        if item.DynamicType().Name() == 'StepShape_ManifoldSolidBrep':
+                        if item.DynamicType().Name() == "StepShape_ManifoldSolidBrep":
                             msb = StepShape_ManifoldSolidBrep.DownCast(item)
                             outer = msb.Outer()
                             if outer is not None:
@@ -1090,6 +1152,7 @@ class ReadSTEP:
             # --- Transfer faces per repr into compounds ---
             # Reuse the existing reader's model (avoids re-reading STEP file)
             import time as _time
+
             t_rec_start = _time.time()
 
             reader = basic_reader
@@ -1113,7 +1176,11 @@ class ReadSTEP:
                             builder.Add(compound, reader.Shape(ns))
                             ok = ns
                             repr_ok = True
-                            print(f"[recovered repr#{repr_num} as whole: {ns} shapes]", end="", flush=True)
+                            print(
+                                f"[recovered repr#{repr_num} as whole: {ns} shapes]",
+                                end="",
+                                flush=True,
+                            )
                 except Exception:
                     pass
 
@@ -1134,7 +1201,11 @@ class ReadSTEP:
                 if ok > 0:
                     repr_num_to_compound[repr_num] = compound
 
-            print(f"[recovery transfer: {_time.time() - t_rec_start:.1f}s]", end="", flush=True)
+            print(
+                f"[recovery transfer: {_time.time() - t_rec_start:.1f}s]",
+                end="",
+                flush=True,
+            )
 
             # --- Build final PD# → compound map ---
             for pd_num, repr_num in pd_num_to_repr_num.items():
@@ -1159,7 +1230,7 @@ class ReadSTEP:
             return None
 
         # Find the ProductDefinition entity for this shape
-        tr = getattr(self, '_transfer_reader', None)
+        tr = getattr(self, "_transfer_reader", None)
         if tr is None:
             return None
 
@@ -1195,15 +1266,14 @@ class ReadSTEP:
             pass
         return shp
 
-    def _tessellate_shape(self, shp, lin_def, ang_def, part_name="",
-                          skip_faulty=False):
+    def _tessellate_shape(self, shp, lin_def, ang_def, part_name="", skip_faulty=False):
         """Tessellate a shape, retrying with relaxed tolerances and shape
         healing if the first attempt produces no triangulation.
 
         When skip_faulty is True, skip all healing/recovery retries — just
         tessellate once and return whatever we get.
         """
-        BrepTools().Clean(shp)
+        BRepTools.Clean_s(shp)
         brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
         brepmesh.Perform()
 
@@ -1213,7 +1283,7 @@ class ReadSTEP:
         has_tris = False
         while ex.More():
             face = TopoDS.Face(ex.Current())
-            if BRep_Tool().Triangulation(face, test_loc) is not None:
+            if BRep_Tool().Triangulation_s(face, test_loc) is not None:
                 has_tris = True
                 break
             ex.Next()
@@ -1224,21 +1294,24 @@ class ReadSTEP:
         # Retry 1: heal shape then tessellate
         healed = self._heal_shape(shp)
         if healed is not shp:
-            BrepTools().Clean(healed)
+            BRepTools.Clean_s(healed)
             brepmesh = BRepMesh_IncrementalMesh(healed, lin_def, False, ang_def, False)
             brepmesh.Perform()
             print(f"\n  [healed] {part_name}", end="", flush=True)
             return healed
 
         # Retry 2: relax tolerances significantly
-        BrepTools().Clean(shp)
-        brepmesh = BRepMesh_IncrementalMesh(shp, lin_def * 4.0, False, ang_def * 2.0, False)
+        BRepTools.Clean_s(shp)
+        brepmesh = BRepMesh_IncrementalMesh(
+            shp, lin_def * 4.0, False, ang_def * 2.0, False
+        )
         brepmesh.Perform()
         print(f"\n  [relaxed-tess] {part_name}", end="", flush=True)
         return shp
 
-    def build_trimesh(self, shape, lin_def=0.8, ang_def=0.5, hacks=set([]),
-                      part_name=""):
+    def build_trimesh(
+        self, shape, lin_def=0.8, ang_def=0.5, hacks=set([]), part_name=""
+    ):
         out_mesh = trimesh.TriMesh()
         out_mesh.matrix = np.eye(4, dtype=np.float32)
 
@@ -1272,7 +1345,9 @@ class ReadSTEP:
                 # Use recovered compound as the sole shape; discard sub_shapes
                 # since we no longer have XCAF label associations.
                 self.face_colors[recovered_shape] = self.face_colors.get(shape)
-                self.face_color_priority[recovered_shape] = self.face_color_priority.get(shape, 0)
+                self.face_color_priority[recovered_shape] = (
+                    self.face_color_priority.get(shape, 0)
+                )
                 with self._lock:
                     self.recovered_parts.append(_part_name or "unknown")
 
@@ -1316,16 +1391,20 @@ class ReadSTEP:
 
             if not self._pre_tessellated:
                 shp = self._tessellate_shape(
-                    shp, lin_def, ang_def,
-                    part_name=_part_name, skip_faulty=skip_faulty)
+                    shp, lin_def, ang_def, part_name=_part_name, skip_faulty=skip_faulty
+                )
                 ex = TopExp_Explorer(shp, TopAbs_FACE)
             else:
                 test_loc = TopLoc_Location()
                 test_face = TopoDS.Face(ex.Current())
-                if BRep_Tool().Triangulation(test_face, test_loc) is None:
+                if BRep_Tool().Triangulation_s(test_face, test_loc) is None:
                     shp = self._tessellate_shape(
-                        shp, lin_def, ang_def,
-                        part_name=_part_name, skip_faulty=skip_faulty)
+                        shp,
+                        lin_def,
+                        ang_def,
+                        part_name=_part_name,
+                        skip_faulty=skip_faulty,
+                    )
                     ex = TopExp_Explorer(shp, TopAbs_FACE)
                     print(f"\n  [re-tess] {_part_name}", end="", flush=True)
             trf = shp.Location().Transformation()
@@ -1344,11 +1423,9 @@ class ReadSTEP:
 
         # ── Phase 2: Extract triangulations ───────────────────────────
         if _HAS_NATIVE:
-            result = self._build_trimesh_native(
-                collected_faces, face_dedup, out_mesh)
+            result = self._build_trimesh_native(collected_faces, face_dedup, out_mesh)
         else:
-            result = self._build_trimesh_python(
-                collected_faces, face_dedup, out_mesh)
+            result = self._build_trimesh_python(collected_faces, face_dedup, out_mesh)
 
         return result
 
@@ -1372,7 +1449,7 @@ class ReadSTEP:
             # Verify face has valid, non-empty triangulation before passing to
             # native module.  A face with a corrupt or empty triangulation
             # (e.g. from healing) will crash the C++ OpenMP parallel loop.
-            tri = brep_tool.Triangulation(face, test_loc)
+            tri = brep_tool.Triangulation_s(face, test_loc)
             if tri is None or tri.NbTriangles() == 0 or tri.NbNodes() == 0:
                 with self._lock:
                     self.import_problems["Triangulation"] += 1
@@ -1394,9 +1471,18 @@ class ReadSTEP:
         _limit_openmp_threads(1)
         result = stepper_native.extract_face_meshes(face_ptrs, tform_ptrs)
         _limit_openmp_threads(0)  # restore default
-        (all_verts, all_norms, all_uvs, all_faces,
-         face_starts, face_counts, vert_starts, vert_counts,
-         failed_mask, undef_mask) = result
+        (
+            all_verts,
+            all_norms,
+            all_uvs,
+            all_faces,
+            face_starts,
+            face_counts,
+            vert_starts,
+            vert_counts,
+            failed_mask,
+            undef_mask,
+        ) = result
 
         # Count problems
         n_failed = int(failed_mask.sum())
@@ -1421,21 +1507,24 @@ class ReadSTEP:
             vc = int(vert_counts[j])
             if vc == 0:
                 return
-            reversed_face = (face.Orientation() == TopAbs_REVERSED)
+            reversed_face = face.Orientation() == TopAbs_REVERSED
 
             # Extract 3x3 rotation from inverse transform once per face
             itform = trf.Inverted()
-            rot = np.array([
-                [itform.Value(1, 1), itform.Value(1, 2), itform.Value(1, 3)],
-                [itform.Value(2, 1), itform.Value(2, 2), itform.Value(2, 3)],
-                [itform.Value(3, 1), itform.Value(3, 2), itform.Value(3, 3)],
-            ], dtype=np.float32)
+            rot = np.array(
+                [
+                    [itform.Value(1, 1), itform.Value(1, 2), itform.Value(1, 3)],
+                    [itform.Value(2, 1), itform.Value(2, 2), itform.Value(2, 3)],
+                    [itform.Value(3, 1), itform.Value(3, 2), itform.Value(3, 3)],
+                ],
+                dtype=np.float32,
+            )
 
             surface = BRepAdaptor_Surface(face)
             prop = BRepLProp_SLProps(surface, 2, _gp_res)
 
             # Use UVs already extracted by native module (skip SWIG calls)
-            face_uvs = all_uvs[vs:vs + vc]
+            face_uvs = all_uvs[vs : vs + vc]
             u_vals = face_uvs[:, 0]
             v_vals = face_uvs[:, 1]
             Ucenter = (float(u_vals.min()) + float(u_vals.max())) * 0.5
@@ -1470,16 +1559,17 @@ class ReadSTEP:
             norms_out = norms_local @ rot.T
             if reversed_face:
                 norms_out = -norms_out
-            all_norms[vs:vs + vc] = norms_out
+            all_norms[vs : vs + vc] = norms_out
 
-        valid_indices = [j for j in range(len(face_refs))
-                         if not failed_mask[j]]
+        valid_indices = [j for j in range(len(face_refs)) if not failed_mask[j]]
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         n_workers = min(len(valid_indices), os.cpu_count() or 4)
         if n_workers > 1 and len(valid_indices) > 1:
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                futures = [pool.submit(_recompute_face_normals, j)
-                           for j in valid_indices]
+                futures = [
+                    pool.submit(_recompute_face_normals, j) for j in valid_indices
+                ]
                 for f in as_completed(futures):
                     f.result()  # propagate exceptions
         else:
@@ -1511,11 +1601,11 @@ class ReadSTEP:
             if fc == 0:
                 continue
 
-            tri_batches[fs:fs + fc] = batch_id
+            tri_batches[fs : fs + fc] = batch_id
             if col_rgb is not None:
-                tri_colors[fs:fs + fc] = col_rgb
+                tri_colors[fs : fs + fc] = col_rgb
                 mat_name = col_name if col_name else None
-                tri_mat_names[fs:fs + fc] = [mat_name] * fc
+                tri_mat_names[fs : fs + fc] = [mat_name] * fc
 
         return NativeMeshData(
             verts=all_verts,
