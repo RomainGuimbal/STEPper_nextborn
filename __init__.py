@@ -31,7 +31,6 @@ except ModuleNotFoundError:
     print("Stepper not running inside Blender.")
     INSIDE_BLENDER = False
 
-
 if INSIDE_BLENDER:
     # Normally don't do import star, but here it's basically a file concatenation
     # File concatenation is because the test framework breaks on __init__.py import bpy

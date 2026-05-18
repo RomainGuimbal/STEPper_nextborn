@@ -45,8 +45,6 @@ from .mesh_utils import (
     calculate_detail_level,
     bpy_update_object_data,
 )
-
-import material_db
 from .material_db import (
     get_active_matdb_path,
     ensure_matdb_materials,
@@ -55,7 +53,11 @@ from .material_db import (
     matdb_enum_items,
     list_matdb_files,
     PG_MaterialMapping,
+    register as register_material_db,
+    unregister as unregister_material_db
 )
+
+
 
 # LRU file cache with max entry limit
 MAX_FILE_CACHE = 10
@@ -1577,7 +1579,7 @@ classes = (
 
 
 def register():
-    material_db.register()
+    register_material_db()
 
     for c in classes:
         bpy.utils.register_class(c)
@@ -1591,4 +1593,7 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     del bpy.types.Scene.stepper
 
-    material_db.unregister()
+    unregister_material_db()
+
+if __package__ == "__main__":
+    register()

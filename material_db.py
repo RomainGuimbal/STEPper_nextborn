@@ -20,7 +20,7 @@ import bpy
 from .utils import get_addon_prefs
 
 _MATDB_TEXT_NAME = "STEPper_MaterialDB"
-_ADDON_DIR = os.path.dirname(os.path.realpath(__file__))
+_ADDON_DIR = __package__
 
 
 # ---------------------------------------------------------------------------
