@@ -149,7 +149,7 @@ class StepAnalyzer:
         self.indent -= 1
 
 
-if __name__ == "__main__":
+if __name__ == "__package__":
     SA = StepAnalyzer(filename="tests/as1-oc-214.step")
     print(SA.dump())
 
